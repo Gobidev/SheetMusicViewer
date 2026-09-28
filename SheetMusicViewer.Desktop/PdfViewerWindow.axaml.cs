@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -90,6 +91,9 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     private MetronomeService? _metronomeService;
     private MetronomeOverlayWindow? _metronomeOverlay;
 
+    // Window state to restore when leaving full screen
+    private WindowState _windowStateBeforeFullScreen = WindowState.Maximized;
+
     private class PageCacheEntry
     {
         public CancellationTokenSource Cts { get; } = new();
@@ -138,11 +142,24 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         // Load and display the last opened PDF
         Loaded += (s, e) => _ = OnWindowLoadedAsync();
         
-        // Apply maximized state after window opens
+        // Apply maximized/full screen state after window opens
         Opened += (s, e) =>
         {
             Trace.WriteLine($"PdfViewerWindow Opened: Reading WindowMaximized={AppSettings.Instance.WindowMaximized}");
-            if (AppSettings.Instance.WindowMaximized)
+            _windowStateBeforeFullScreen = AppSettings.Instance.WindowMaximized
+                ? WindowState.Maximized
+                : WindowState.Normal;
+
+            // Restore the saved geometry only if it is still on a connected screen
+            ClampWindowToVisibleScreen();
+
+            if (AppSettings.Instance.IsFullScreen)
+            {
+                SystemDecorations = SystemDecorations.None;
+                WindowState = WindowState.FullScreen;
+                Trace.WriteLine($"PdfViewerWindow Opened: Set WindowState to FullScreen");
+            }
+            else if (AppSettings.Instance.WindowMaximized)
             {
                 WindowState = WindowState.Maximized;
                 Trace.WriteLine($"PdfViewerWindow Opened: Set WindowState to Maximized");
@@ -472,11 +489,13 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         // Save settings
         var settings = AppSettings.Instance;
         settings.Show2Pages = Show2Pages;
-        settings.IsFullScreen = _chkFullScreen?.IsChecked == true;
-        settings.WindowMaximized = WindowState == WindowState.Maximized;
+        settings.IsFullScreen = WindowState == WindowState.FullScreen || _chkFullScreen?.IsChecked == true;
+        settings.WindowMaximized =
+            WindowState == WindowState.Maximized ||
+            (WindowState == WindowState.FullScreen && _windowStateBeforeFullScreen == WindowState.Maximized);
         
-        // Only save position/size if not maximized
-        if (WindowState != WindowState.Maximized)
+        // Only save position/size if not maximized or full screen
+        if (WindowState is not (WindowState.Maximized or WindowState.FullScreen))
         {
             settings.WindowWidth = Width;
             settings.WindowHeight = Height;
@@ -1776,11 +1795,31 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     
     private async void BtnRotate_Click(object? sender, RoutedEventArgs e)
     {
-        
-        // TODO: Rotate the page in metadata and save using PdfMetaDataCore.SaveToJson()
-        
-        Trace.WriteLine($"Rotate clicked for page {CurrentPageNumber}");
-        
+        if (_currentPdfMetaData == null || _currentPdfMetaData.VolumeInfoList.Count == 0)
+        {
+            return;
+        }
+
+        // Rotation is stored per volume (0..3 = 0/90/180/270 degrees)
+        var volNo = _currentPdfMetaData.GetVolNumFromPageNum(CurrentPageNumber);
+        if (volNo < 0 || volNo >= _currentPdfMetaData.VolumeInfoList.Count)
+        {
+            return;
+        }
+
+        var volume = _currentPdfMetaData.VolumeInfoList[volNo];
+        volume.Rotation = (volume.Rotation + 1) % 4;
+
+        try
+        {
+            PdfMetaDataCore.SaveToJson(_currentPdfMetaData);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogException("Rotate: failed to save metadata", ex);
+        }
+
+        Trace.WriteLine($"Rotate: volume {volNo} rotation is now {volume.Rotation * 90} degrees");
         ClearCache();
         await ShowPageAsync(CurrentPageNumber);
     }
@@ -1789,18 +1828,57 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     {
         if (isChecked)
         {
-            this.WindowState = WindowState.Maximized;
-            this.SystemDecorations = SystemDecorations.None;
+            if (WindowState != WindowState.FullScreen)
+            {
+                _windowStateBeforeFullScreen = WindowState == WindowState.Maximized
+                    ? WindowState.Maximized
+                    : WindowState.Normal;
+            }
+            SystemDecorations = SystemDecorations.None;
+            WindowState = WindowState.FullScreen;
         }
         else
         {
-            this.SystemDecorations = SystemDecorations.Full;
-            // Only reset to Normal if we're coming_FROM_ full screen, not on startup
-            // Check if we should restore maximized state from settings
-            if (!AppSettings.Instance.WindowMaximized)
-            {
-                this.WindowState = WindowState.Normal;
-            }
+            SystemDecorations = SystemDecorations.Full;
+            WindowState = _windowStateBeforeFullScreen == WindowState.Maximized
+                ? WindowState.Maximized
+                : WindowState.Normal;
+        }
+    }
+
+    /// <summary>
+    /// Ensures the restored window geometry is visible on a currently connected screen.
+    /// Protects against saved positions from a monitor that has since been removed,
+    /// a display scaling change, or a tablet that was rotated/undocked elsewhere.
+    /// </summary>
+    private void ClampWindowToVisibleScreen()
+    {
+        try
+        {
+            var screens = Screens;
+            if (screens.ScreenCount == 0 || WindowState != WindowState.Normal) return;
+
+            var windowRect = new PixelRect(
+                Position.X, Position.Y,
+                Math.Max(1, (int)Width), Math.Max(1, (int)Height));
+
+            var screen = screens.All.FirstOrDefault(s => s.WorkingArea.Intersects(windowRect))
+                         ?? screens.Primary
+                         ?? screens.All[0];
+            var area = screen.WorkingArea;
+
+            Width  = Math.Min(Math.Max(Width,  1), area.Width);
+            Height = Math.Min(Math.Max(Height, 1), area.Height);
+
+            var x = Math.Clamp(Position.X, area.X, Math.Max(area.X, area.X + area.Width  - (int)Width));
+            var y = Math.Clamp(Position.Y, area.Y, Math.Max(area.Y, area.Y + area.Height - (int)Height));
+            Position = new PixelPoint(x, y);
+
+            Trace.WriteLine($"ClampWindowToVisibleScreen: {Width}x{Height} at ({x},{y})");
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"ClampWindowToVisibleScreen failed: {ex.Message}");
         }
     }
     
@@ -2036,6 +2114,22 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         {
             switch (e.Key)
             {
+                case Key.F11:
+                    // Standard full-screen toggle
+                    if (_chkFullScreen != null)
+                    {
+                        _chkFullScreen.IsChecked = !(_chkFullScreen.IsChecked == true);
+                    }
+                    e.Handled = true;
+                    break;
+                case Key.Escape:
+                    // Escape leaves full screen (dialogs handle their own Escape)
+                    if (_chkFullScreen?.IsChecked == true)
+                    {
+                        _chkFullScreen.IsChecked = false;
+                        e.Handled = true;
+                    }
+                    break;
                 case Key.Home:
                     if (_currentPdfMetaData != null)
                     {
