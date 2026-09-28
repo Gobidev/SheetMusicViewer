@@ -35,15 +35,19 @@ public class GestureHandler
     private Point _lastDragPosition;
     private const double MoveThreshold = 10;
     
-    // For double-tap detection
-    private readonly Stopwatch _doubleTapStopwatch = new();
+    // For double-tap detection (thresholds configurable from user options)
     private Point _lastTapLocation;
-    private const double DoubleTapDistanceThreshold = 40;
-    private const int DoubleTapTimeThreshold = 400;
-    
-    // For touch navigation debouncing
-    private int _lastTouchTimestamp;
-    private const int TouchDebounceMs = 300;
+    private long _lastTapTimeMs = long.MinValue;
+
+    /// <summary>Maximum time between taps to count as a double-tap (ms).</summary>
+    public double DoubleTapTimeMs { get; set; } = 400;
+
+    /// <summary>Maximum distance between taps to count as a double-tap (px).</summary>
+    public double DoubleTapDistancePx { get; set; } = 40;
+
+    /// <summary>Minimum/maximum zoom relative to the fit-to-window scale.</summary>
+    public double MinScale { get; set; } = GestureTransformMath.DefaultMinScale;
+    public double MaxScale { get; set; } = GestureTransformMath.DefaultMaxScale;
     
     // Diagnostic logging
     public bool EnableLogging { get; set; }
@@ -71,6 +75,12 @@ public class GestureHandler
     /// If true, gestures are disabled (e.g., when inking is active)
     /// </summary>
     public bool IsDisabled { get; set; }
+
+    /// <summary>
+    /// True when the page is zoomed or panned away from the fit-to-window state.
+    /// While transformed, single taps do not navigate and a double tap resets to fit.
+    /// </summary>
+    public bool IsTransformed => !GestureTransformMath.IsIdentity(GetCurrentMatrix());
     
     /// <summary>
     /// Minimum number of pages to navigate. Usually 1 or 2.
@@ -99,6 +109,9 @@ public class GestureHandler
         
         // Wire up mouse wheel for Ctrl+scroll zoom
         _target.PointerWheelChanged += OnPointerWheelChanged;
+
+        // Re-clamp the zoom/pan when the window is resized or the tablet is rotated
+        _target.PropertyChanged += OnTargetPropertyChanged;
     }
 
     /// <summary>
@@ -112,6 +125,7 @@ public class GestureHandler
         _target.RemoveHandler(Control.PointerReleasedEvent, OnPointerReleased);
         _target.RemoveHandler(Control.PointerCaptureLostEvent, OnPointerCaptureLost);
         _target.PointerWheelChanged -= OnPointerWheelChanged;
+        _target.PropertyChanged -= OnTargetPropertyChanged;
     }
 
     /// <summary>
@@ -189,7 +203,7 @@ public class GestureHandler
         else if (_activePointers.Count == 1 && _hasMoved && !_gestureWasPerformed)
         {
             var currentMatrix = GetCurrentMatrix();
-            if (!IsIdentityMatrix(currentMatrix))
+            if (!GestureTransformMath.IsIdentity(currentMatrix))
             {
                 ApplySingleFingerPan(pos);
                 e.Handled = true;
@@ -209,23 +223,27 @@ public class GestureHandler
         // Skip tap/navigation processing if the event was already handled (e.g., by InkCanvas eraser)
         if (_activePointers.Count == 1 && !wasGesturing && !IsDisabled && !_hasMoved && !e.Handled)
         {
-            var now = Environment.TickCount;
-            var diff = Math.Abs(now - _lastTouchTimestamp);
-            
-            Log($"  -> TAP candidate: timeDiff={diff}ms");
-            
-            if (diff > TouchDebounceMs)
+            var isDoubleTap = IsDoubleTap(pos);
+
+            if (IsTransformed)
             {
-                if (IsDoubleTap(pos))
+                // While zoomed/panned, single taps never navigate (that caused
+                // accidental page turns); a double tap resets to fit-to-window.
+                if (isDoubleTap)
                 {
-                    Log("  -> DOUBLE-TAP!");
+                    Log("  -> DOUBLE-TAP (reset to fit)");
                     DoubleTapped?.Invoke(this, pos);
                 }
                 else
                 {
-                    HandleTapNavigation(pos, e);
+                    Log("  -> Tap while transformed - no navigation");
                 }
-                _lastTouchTimestamp = now;
+            }
+            else
+            {
+                // Fit-to-window: navigate immediately - page turns must stay instant.
+                Log("  -> NAVIGATE (single tap)");
+                HandleTapNavigation(pos, e);
             }
         }
         
@@ -274,14 +292,11 @@ public class GestureHandler
                            Matrix.CreateTranslation(pos.X, pos.Y) *
                            currentMatrix;
             
-            _target.RenderTransform = new MatrixTransform(newMatrix);
+            SetTransform(newMatrix);
             e.Handled = true;
         }
-        else
-        {
-            ResetTransform();
-            e.Handled = true;
-        }
+        // Non-Ctrl wheel/trackpad scroll deliberately does not touch the zoom:
+        // it used to reset it, so two-finger scrolling cleared the zoom by accident.
     }
 
     private void StartGesture()
@@ -330,7 +345,7 @@ public class GestureHandler
                        Matrix.CreateTranslation(translateX, translateY) *
                        _initialTransform;
         
-        _target.RenderTransform = new MatrixTransform(newMatrix);
+        SetTransform(newMatrix);
     }
 
     private void ApplySingleFingerPan(Point currentPos)
@@ -342,8 +357,53 @@ public class GestureHandler
         {
             var currentMatrix = GetCurrentMatrix();
             var newMatrix = Matrix.CreateTranslation(deltaX, deltaY) * currentMatrix;
-            _target.RenderTransform = new MatrixTransform(newMatrix);
+            SetTransform(newMatrix);
             _lastDragPosition = currentPos;
+        }
+    }
+
+    /// <summary>
+    /// Applies a transform matrix after clamping it to the viewport, so the page
+    /// can never be dragged/pinched fully off-screen or shrunk into a corner.
+    /// </summary>
+    private void SetTransform(Matrix matrix)
+    {
+        _target.RenderTransform = new MatrixTransform(ClampMatrix(matrix));
+    }
+
+    /// <summary>
+    /// Re-clamps the current transform against the current viewport size.
+    /// Called when the window is resized or the tablet is rotated.
+    /// </summary>
+    public void ClampTransform()
+    {
+        var current = GetCurrentMatrix();
+        if (IsDisabled || GestureTransformMath.IsIdentity(current)) return;
+
+        var clamped = ClampMatrix(current);
+        if (!GestureTransformMath.IsIdentity(clamped))
+        {
+            _target.RenderTransform = new MatrixTransform(clamped);
+        }
+        else
+        {
+            ResetTransform();
+        }
+    }
+
+    private Matrix ClampMatrix(Matrix matrix)
+    {
+        var viewport = _target.Bounds.Size;
+        if (viewport.Width <= 0 || viewport.Height <= 0) return matrix;
+
+        return GestureTransformMath.Clamp(matrix, viewport, MinScale, MaxScale);
+    }
+
+    private void OnTargetPropertyChanged(object? sender, Avalonia.AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property == Visual.BoundsProperty)
+        {
+            ClampTransform();
         }
     }
 
@@ -387,17 +447,15 @@ public class GestureHandler
 
     private bool IsDoubleTap(Point currentPosition)
     {
+        var now = Environment.TickCount64;
         var distance = GetDistance(currentPosition, _lastTapLocation);
-        var tapsAreCloseInDistance = distance < DoubleTapDistanceThreshold;
-        
-        var elapsed = _doubleTapStopwatch.Elapsed;
-        _doubleTapStopwatch.Restart();
-        
-        var tapsAreCloseInTime = elapsed != TimeSpan.Zero && 
-                                 elapsed < TimeSpan.FromMilliseconds(DoubleTapTimeThreshold);
-        
+        var tapsAreCloseInDistance = distance < DoubleTapDistancePx;
+        var tapsAreCloseInTime = _lastTapTimeMs != long.MinValue &&
+                                 now - _lastTapTimeMs <= DoubleTapTimeMs;
+
+        _lastTapTimeMs = now;
         _lastTapLocation = currentPosition;
-        
+
         return tapsAreCloseInDistance && tapsAreCloseInTime;
     }
 
@@ -420,17 +478,6 @@ public class GestureHandler
     private static Point GetCenter(Point p1, Point p2)
     {
         return new Point((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2);
-    }
-
-    private static bool IsIdentityMatrix(Matrix m)
-    {
-        const double epsilon = 0.001;
-        return Math.Abs(m.M11 - 1) < epsilon &&
-               Math.Abs(m.M12) < epsilon &&
-               Math.Abs(m.M21) < epsilon &&
-               Math.Abs(m.M22 - 1) < epsilon &&
-               Math.Abs(m.M31) < epsilon &&
-               Math.Abs(m.M32) < epsilon;
     }
 }
 

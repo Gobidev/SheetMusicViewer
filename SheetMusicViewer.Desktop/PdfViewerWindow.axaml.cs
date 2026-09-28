@@ -1608,9 +1608,12 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         
         _gestureHandler?.Detach();
         
+        var userOptions = AppSettings.Instance.UserOptions;
         _gestureHandler = new GestureHandler(_dpPage, enableLogging: false)
         {
-            NumPagesPerView = NumPagesPerView
+            NumPagesPerView = NumPagesPerView,
+            DoubleTapTimeMs = userOptions.DoubleTapTimeThresholdMs,
+            DoubleTapDistancePx = userOptions.DoubleTapDistanceThreshold
         };
         
         _gestureHandler.NavigationRequested += (s, e) =>
