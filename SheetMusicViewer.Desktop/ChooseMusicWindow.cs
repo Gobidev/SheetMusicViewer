@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
@@ -8,6 +9,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using PDFtoImage;
 using SheetMusicLib;
 using SkiaSharp;
@@ -27,7 +29,17 @@ namespace SheetMusicViewer.Desktop;
 public class ChooseMusicWindow : Window
 {
     private TabControl _tabControl;
+    private StackPanel _folderGroup;
+    private StackPanel _buttonsGroup;
+    private Grid _rootGrid;
+    private StackPanel _booksFilterPanel;
+    private StackPanel _filterGroup;
+    private Label _filterLabel;
+    private bool _narrowLayout;
+    private double _tabContentOffset = -1;
+    private readonly List<Border> _tabContentWrappers = new();
     private ListBox _lbBooks;
+    private TextBlock _tbxTotals;
     private ComboBox _cboRootFolder;
     private TextBox _tbxFilter;
     private RadioButton _rbtnByDate;
@@ -167,6 +179,8 @@ public class ChooseMusicWindow : Window
 
         BuildUI();
 
+        SizeChanged += (s, e) => UpdateTopBarLayout(e.NewSize.Width);
+
         // Maximize before the window is shown so it maps maximized without a
         // visible resize; setting it only in Opened can be ignored by the WM.
         // Start transparent so any WM maximize animation is not visible.
@@ -228,6 +242,134 @@ public class ChooseMusicWindow : Window
 
     private bool _maximizeRevealScheduled;
 
+    private const double NarrowTopBarWidth = 1100;
+
+    /// <summary>
+    /// Wraps a tab's content so its top padding can be adjusted when the folder
+    /// selector row overlays the top of the tab content area.
+    /// </summary>
+    private Control WrapTabContent(Control content)
+    {
+        var wrapper = new Border { Child = content };
+        _tabContentWrappers.Add(wrapper);
+        return wrapper;
+    }
+
+    /// <summary>
+    /// Top area layout:
+    /// wide   - tab headers on the left, folder selector and buttons right-aligned
+    ///          in the same row;
+    /// narrow - tab headers and buttons share the top row, the folder selector
+    ///          sits on the second row (tab content is pushed down to match).
+    /// </summary>
+    private void UpdateTopBarLayout(double width)
+    {
+        if (_folderGroup == null || _buttonsGroup == null) return;
+
+        bool narrow = width > 0 && width < NarrowTopBarWidth;
+
+        // Row 0 always holds the tab strip
+        Grid.SetRow(_tabControl, 0);
+        Grid.SetRowSpan(_tabControl, 3);
+        Grid.SetColumn(_tabControl, 0);
+        Grid.SetColumnSpan(_tabControl, 3);
+
+        if (narrow)
+        {
+            // Top row: tabs (left) + music folder (right)
+            Grid.SetRow(_folderGroup, 0);
+            Grid.SetColumn(_folderGroup, 2);
+            Grid.SetColumnSpan(_folderGroup, 1);
+            _folderGroup.HorizontalAlignment = HorizontalAlignment.Right;
+            _folderGroup.VerticalAlignment = VerticalAlignment.Center;
+            _folderGroup.Margin = new Thickness(0, 5, 10, 5);
+
+            // Second row: filter (left) + buttons (right)
+            Grid.SetRow(_buttonsGroup, 1);
+            Grid.SetColumn(_buttonsGroup, 2);
+            Grid.SetColumnSpan(_buttonsGroup, 1);
+            _buttonsGroup.HorizontalAlignment = HorizontalAlignment.Right;
+            _buttonsGroup.VerticalAlignment = VerticalAlignment.Center;
+            _buttonsGroup.Margin = new Thickness(0, 0, 10, 5);
+
+            if (!ReferenceEquals(_filterGroup.Parent, _rootGrid))
+            {
+                (_filterGroup.Parent as Panel)?.Children.Remove(_filterGroup);
+                _rootGrid.Children.Add(_filterGroup);
+            }
+            Grid.SetRow(_filterGroup, 1);
+            Grid.SetColumn(_filterGroup, 0);
+            Grid.SetColumnSpan(_filterGroup, 1);
+            _filterGroup.HorizontalAlignment = HorizontalAlignment.Left;
+            _filterGroup.VerticalAlignment = VerticalAlignment.Center;
+            _filterGroup.Margin = new Thickness(18, 0, 10, 5);
+            _filterLabel.Margin = new Thickness(0);
+        }
+        else
+        {
+            Grid.SetRow(_folderGroup, 0);
+            Grid.SetColumn(_folderGroup, 1);
+            Grid.SetColumnSpan(_folderGroup, 1);
+            _folderGroup.HorizontalAlignment = HorizontalAlignment.Right;
+            _folderGroup.VerticalAlignment = VerticalAlignment.Center;
+            _folderGroup.Margin = new Thickness(0, 5, 0, 5);
+
+            Grid.SetRow(_buttonsGroup, 0);
+            Grid.SetColumn(_buttonsGroup, 2);
+            Grid.SetColumnSpan(_buttonsGroup, 1);
+            _buttonsGroup.HorizontalAlignment = HorizontalAlignment.Right;
+            _buttonsGroup.VerticalAlignment = VerticalAlignment.Top;
+            _buttonsGroup.Margin = new Thickness(0, 5, 10, 5);
+
+            if (!ReferenceEquals(_filterGroup.Parent, _booksFilterPanel))
+            {
+                (_filterGroup.Parent as Panel)?.Children.Remove(_filterGroup);
+                _booksFilterPanel.Children.Add(_filterGroup);
+            }
+            _filterLabel.Margin = new Thickness(20, 0, 0, 0);
+        }
+
+        _narrowLayout = narrow;
+        UpdateTabContentOffset();
+    }
+
+    /// <summary>
+    /// Offsets the tab content so it starts below the folder row when that row
+    /// overlaps the top of the content area (narrow layout). Computed from the
+    /// actual header/content geometry so no blank space is wasted.
+    /// </summary>
+    private void UpdateTabContentOffset()
+    {
+        double needed = 0;
+        if (_narrowLayout && _folderGroup != null && _tabControl != null)
+        {
+            var header = _tabControl.GetVisualDescendants().OfType<ItemsPresenter>().FirstOrDefault();
+            if (header != null)
+            {
+                var headerBottom = (header.TranslatePoint(default, _tabControl)?.Y ?? 0) + header.Bounds.Height;
+
+                // Bottom of the lowest overlay row element (folder, filter or buttons)
+                double rowBottom = 0;
+                foreach (var control in new Control[] { _folderGroup, _filterGroup, _buttonsGroup })
+                {
+                    var bottom = (control.TranslatePoint(default, _tabControl)?.Y ?? 0) + control.Bounds.Height;
+                    rowBottom = Math.Max(rowBottom, bottom);
+                }
+
+                needed = Math.Max(0, rowBottom - headerBottom) + 1;
+            }
+        }
+
+        if (Math.Abs(needed - _tabContentOffset) < 0.5) return;
+        _tabContentOffset = needed;
+
+        var padding = new Thickness(0, needed, 0, 0);
+        foreach (var wrapper in _tabContentWrappers)
+        {
+            wrapper.Padding = padding;
+        }
+    }
+
     /// <summary>
     /// Maximizes the window. The state is applied immediately (before the window
     /// is mapped where possible) and re-applied briefly after it is shown: some
@@ -277,7 +419,11 @@ public class ChooseMusicWindow : Window
     /// <summary>Resizes/moves the window to fill the screen's working area.</summary>
     private void FitToWorkingArea()
     {
-        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        // Prefer the owner's screen so the chooser stays on the same monitor
+        // (Owner is only available after ShowDialog has started)
+        var screen = (Owner != null ? Screens.ScreenFromWindow(Owner) : null)
+                     ?? Screens.ScreenFromWindow(this)
+                     ?? Screens.Primary;
         if (screen == null) return;
 
         var area = screen.WorkingArea;
@@ -291,7 +437,9 @@ public class ChooseMusicWindow : Window
 
     private bool IsFullSize()
     {
-        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        var screen = (Owner != null ? Screens.ScreenFromWindow(Owner) : null)
+                     ?? Screens.ScreenFromWindow(this)
+                     ?? Screens.Primary;
         if (screen == null) return true;
 
         var scaling = screen.Scaling > 0 ? screen.Scaling : 1.0;
@@ -375,16 +523,21 @@ public class ChooseMusicWindow : Window
 
     private void BuildUI()
     {
-        var grid = new Grid();
+        _rootGrid = new Grid();
+        var grid = _rootGrid;
+        grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
         grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
         grid.RowDefinitions.Add(new RowDefinition(new GridLength(1, GridUnitType.Star)));
+        grid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
+        grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+        grid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
 
         _tabControl = new TabControl
         {
             Background = Brushes.Transparent // Let window background show through
         };
         Grid.SetRow(_tabControl, 0);
-        Grid.SetRowSpan(_tabControl, 2);
+        Grid.SetRowSpan(_tabControl, 3);
 
         // Style for tab headers - use theme-aware colors
         var tabItemStyle = new Style(x => x.OfType<TabItem>());
@@ -402,49 +555,46 @@ public class ChooseMusicWindow : Window
 
         // Books tab
         var booksTab = new TabItem { Header = "_Books" };
-        booksTab.Content = BuildBooksTabContent();
+        booksTab.Content = WrapTabContent(BuildBooksTabContent());
         _tabControl.Items.Add(booksTab);
 
         // Query tab (moved to 2nd position)
         var queryTab = new TabItem { Header = "_Query" };
-        queryTab.Content = BuildQueryTabContent();
+        queryTab.Content = WrapTabContent(BuildQueryTabContent());
         _tabControl.Items.Add(queryTab);
 
         // Favorites tab
         var favTab = new TabItem { Header = "Fa_vorites" };
-        favTab.Content = BuildFavoritesTabContent();
+        favTab.Content = WrapTabContent(BuildFavoritesTabContent());
         _tabControl.Items.Add(favTab);
 
         // Playlist tab
         var playlistTab = new TabItem { Header = "_Playlists" };
-        playlistTab.Content = BuildPlaylistTabContent();
+        playlistTab.Content = WrapTabContent(BuildPlaylistTabContent());
         _tabControl.Items.Add(playlistTab);
 
         // PianoRoll playlist tab
         var pianoRollTab = new TabItem { Header = "Piano_Roll" };
-        pianoRollTab.Content = BuildPianoRollTabContent();
+        pianoRollTab.Content = WrapTabContent(BuildPianoRollTabContent());
         _tabControl.Items.Add(pianoRollTab);
 
         _tabControl.SelectionChanged += OnTabSelectionChanged;
 
         grid.Children.Add(_tabControl);
 
-        // Top bar
-        var topBar = new StackPanel
+        // Top area is responsive (see UpdateTopBarLayout): wide = one right-aligned
+        // row with folder selector + buttons; narrow = folder selector above, tabs
+        // and buttons sharing the next row.
+        _folderGroup = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 5, 10, 5)
+            VerticalAlignment = VerticalAlignment.Center
         };
-        Grid.SetRow(topBar, 0);
-
-        topBar.Children.Add(new Label
+        _folderGroup.Children.Add(new Label
         {
             Content = "Music Folder:",
             VerticalAlignment = VerticalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(20, 0, 0, 0)
+            VerticalContentAlignment = VerticalAlignment.Center
         });
         _cboRootFolder = new ComboBox
         {
@@ -455,7 +605,14 @@ public class ChooseMusicWindow : Window
         PopulateRootFolderComboBox();
         _cboRootFolder.SelectionChanged += OnRootFolderSelectionChanged;
         _cboRootFolder.DropDownOpened += OnRootFolderDropDownOpened;
-        topBar.Children.Add(_cboRootFolder);
+        _folderGroup.Children.Add(_cboRootFolder);
+
+        _buttonsGroup = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center
+        };
 
         var btnRefresh = new Button
         {
@@ -465,7 +622,7 @@ public class ChooseMusicWindow : Window
             [ToolTip.TipProperty] = "Rescan music folder and reload playlists (F5)"
         };
         btnRefresh.Click += OnRefreshClick;
-        topBar.Children.Add(btnRefresh);
+        _buttonsGroup.Children.Add(btnRefresh);
 
         var btnCancel = new Button
         {
@@ -474,7 +631,7 @@ public class ChooseMusicWindow : Window
             Margin = new Thickness(10, 0, 0, 0)
         };
         btnCancel.Click += (s, e) => Close();
-        topBar.Children.Add(btnCancel);
+        _buttonsGroup.Children.Add(btnCancel);
 
         var btnOk = new Button
         {
@@ -484,9 +641,16 @@ public class ChooseMusicWindow : Window
             Margin = new Thickness(10, 0, 10, 0)
         };
         btnOk.Click += BtnOk_Click;
-        topBar.Children.Add(btnOk);
+        _buttonsGroup.Children.Add(btnOk);
 
-        grid.Children.Add(topBar);
+        grid.Children.Add(_folderGroup);
+        _buttonsGroup.ZIndex = 1;
+        grid.Children.Add(_buttonsGroup);
+
+        // Keep the tab-content offset in sync with the real layout geometry
+        _tabControl.LayoutUpdated += (s, e) => UpdateTabContentOffset();
+
+        UpdateTopBarLayout(Width);
 
         Content = grid;
     }
@@ -681,6 +845,7 @@ public class ChooseMusicWindow : Window
         _queryBrowseControl = null;
         _playlistSongsBrowseControl = null;
         _lbBooks.ItemsSource = null;
+        _tbxTotals.Text = "Loading...";
 
         try
         {
@@ -694,6 +859,7 @@ public class ChooseMusicWindow : Window
         }
         catch (Exception ex)
         {
+            _tbxTotals.Text = $"Error: {ex.Message}";
             Logger.LogException("Failed to load PDF metadata from folder", ex);
         }
     }
@@ -707,27 +873,50 @@ public class ChooseMusicWindow : Window
         booksGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
         booksGrid.RowDefinitions.Add(new RowDefinition(new GridLength(1, GridUnitType.Star)));
 
-        var filterPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(5) };
+        var filterPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(5, 0, 5, 0) };
 
-        _rbtnByDate = new RadioButton { Content = "ByDate", GroupName = "Sort", IsChecked = true, Margin = new Thickness(20, 5, 0, 0) };
+        _rbtnByDate = new RadioButton { Content = "ByDate", GroupName = "Sort", IsChecked = true, Margin = new Thickness(0, 0, 0, 0) };
         _rbtnByDate.IsCheckedChanged += OnSortChanged;
         filterPanel.Children.Add(_rbtnByDate);
 
-        _rbtnByFolder = new RadioButton { Content = "ByFolder", GroupName = "Sort", Margin = new Thickness(20, 5, 0, 0) };
+        _rbtnByFolder = new RadioButton { Content = "ByFolder", GroupName = "Sort", Margin = new Thickness(20, 0, 0, 0) };
         _rbtnByFolder.IsCheckedChanged += OnSortChanged;
         filterPanel.Children.Add(_rbtnByFolder);
 
-        _rbtnByNumPages = new RadioButton { Content = "ByNumPages", GroupName = "Sort", Margin = new Thickness(20, 5, 0, 0) };
+        _rbtnByNumPages = new RadioButton { Content = "ByNumPages", GroupName = "Sort", Margin = new Thickness(20, 0, 0, 0) };
         _rbtnByNumPages.IsCheckedChanged += OnSortChanged;
         filterPanel.Children.Add(_rbtnByNumPages);
-
-        filterPanel.Children.Add(new Label { Content = "Filter", Margin = new Thickness(20, 0, 0, 0) });
+        _filterGroup = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        _filterLabel = new Label { Content = "Filter", Margin = new Thickness(20, 0, 0, 0) };
+        _filterGroup.Children.Add(_filterLabel);
         _tbxFilter = new TextBox { Width = 150, Margin = new Thickness(5, 0, 0, 0) };
         _tbxFilter.TextChanged += OnFilterChanged;
-        filterPanel.Children.Add(_tbxFilter);
+        _filterGroup.Children.Add(_tbxFilter);
+        filterPanel.Children.Add(_filterGroup);
+        _booksFilterPanel = filterPanel;
 
-        Grid.SetRow(filterPanel, 0);
-        booksGrid.Children.Add(filterPanel);
+        _tbxTotals = new TextBlock
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(10, 0, 10, 0),
+            FontSize = 11,
+            Foreground = Brushes.Gray,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+
+        // Radios (+ filter in wide layout) on the left, totals on the right
+        var filterRow = new Grid();
+        filterRow.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+        filterRow.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
+        filterRow.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+        Grid.SetColumn(filterPanel, 0);
+        filterRow.Children.Add(filterPanel);
+        Grid.SetColumn(_tbxTotals, 2);
+        filterRow.Children.Add(_tbxTotals);
+
+        Grid.SetRow(filterRow, 0);
+        booksGrid.Children.Add(filterRow);
 
         _lbBooks = new ListBox
         {
@@ -2555,7 +2744,7 @@ public class ChooseMusicWindow : Window
             catch (Exception ex)
             {
                 Logger.LogWarning($"Failed to get PDF thumbnail for {bookName}: {ex.Message}");
-                pdfMetaData.SetCachedThumbnail(GenerateBookCoverBitmap(ThumbnailWidth, ThumbnailHeight, random, bookName, index));
+                pdfMetaData.ThumbnailCache = GenerateBookCoverBitmap(ThumbnailWidth, ThumbnailHeight, random, bookName, index);
             }
 
             _bookItemCache.Add(new BookItemCache
@@ -2598,6 +2787,24 @@ public class ChooseMusicWindow : Window
         }
 
         _lbBooks.ItemsSource = items;
+        UpdateTotalsText(displayItems);
+    }
+
+    /// <summary>Updates the totals shown at the right of the books toolbar.</summary>
+    private void UpdateTotalsText(IEnumerable<BookItemCache> items)
+    {
+        if (_tbxTotals == null) return;
+
+        int books = 0, songs = 0, pages = 0, favs = 0;
+        foreach (var item in items)
+        {
+            books++;
+            songs += item.NumSongs;
+            pages += item.NumPages;
+            favs += item.NumFavs;
+        }
+
+        _tbxTotals.Text = $"#Books = {books} #Songs = {songs:n0} #Pages = {pages:n0} #Fav={favs:n0}";
     }
 
     private Control CreateBookItemControl(BookItemCache cacheItem)
@@ -2687,6 +2894,7 @@ public class ChooseMusicWindow : Window
         }
 
         _lbBooks.ItemsSource = items;
+        UpdateTotalsText(sortedItems);
     }
 
     /// <summary>
@@ -2782,6 +2990,7 @@ public class ChooseMusicWindow : Window
         }
 
         _lbBooks.ItemsSource = items;
+        _tbxTotals.Text = $"{items.Count} books (demo mode)";
     }
 
     private Bitmap GenerateBookCoverBitmap(int width, int height, Random random, string title, int index)
