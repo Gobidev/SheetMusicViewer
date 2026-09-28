@@ -240,6 +240,20 @@ namespace SheetMusicLib
         }
 
         /// <summary>
+        /// Stores a thumbnail created outside GetOrCreateThumbnailAsync (e.g. a
+        /// generated fallback cover) and invalidates older in-flight renders so
+        /// they cannot overwrite it.
+        /// </summary>
+        public void SetCachedThumbnail(object thumbnail)
+        {
+            lock (_thumbnailLock)
+            {
+                ThumbnailCache = thumbnail;
+                _thumbnailGeneration++;
+            }
+        }
+
+        /// <summary>
         /// Clears the cached thumbnail to free memory. Any thumbnail render that
         /// started before this call will not be stored in the cache.
         /// </summary>
