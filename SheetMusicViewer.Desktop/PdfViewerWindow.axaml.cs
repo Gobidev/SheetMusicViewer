@@ -164,7 +164,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
 
             if (AppSettings.Instance.IsFullScreen)
             {
-                SystemDecorations = SystemDecorations.None;
+                // The platform handles decorations for real full screen
                 WindowState = WindowState.FullScreen;
                 Trace.WriteLine($"PdfViewerWindow Opened: Set WindowState to FullScreen");
             }
@@ -1955,12 +1955,10 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
                     _hasNormalGeometry = true;
                 }
             }
-            SystemDecorations = SystemDecorations.None;
             WindowState = WindowState.FullScreen;
         }
         else
         {
-            SystemDecorations = SystemDecorations.Full;
             if (_windowStateBeforeFullScreen == WindowState.Maximized)
             {
                 WindowState = WindowState.Maximized;
