@@ -7,6 +7,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
+using Avalonia.Threading;
 using PDFtoImage;
 using SheetMusicLib;
 using SkiaSharp;
@@ -27,7 +28,6 @@ public class ChooseMusicWindow : Window
 {
     private TabControl _tabControl;
     private ListBox _lbBooks;
-    private TextBlock _tbxTotals;
     private ComboBox _cboRootFolder;
     private TextBox _tbxFilter;
     private RadioButton _rbtnByDate;
@@ -167,6 +167,12 @@ public class ChooseMusicWindow : Window
 
         BuildUI();
 
+        // Maximize before the window is shown so it maps maximized without a
+        // visible resize; setting it only in Opened can be ignored by the WM.
+        // Start transparent so any WM maximize animation is not visible.
+        Opacity = 0;
+        EnsureMaximized();
+
         this.Opened += OnWindowOpened;
         this.Closing += OnWindowClosing;
         this.KeyDown += OnKeyDown;
@@ -220,13 +226,83 @@ public class ChooseMusicWindow : Window
         }
     }
 
-    private async void OnWindowOpened(object? sender, EventArgs e)
+    private bool _maximizeRevealScheduled;
+
+    /// <summary>
+    /// Maximizes the window. The state is applied immediately (before the window
+    /// is mapped where possible) and re-applied briefly after it is shown: some
+    /// window managers ignore maximize requests for freshly mapped dialogs, and
+    /// others (mutter) animate them, which would show the small default size
+    /// first. The window starts transparent and is revealed once maximized.
+    /// </summary>
+    private void EnsureMaximized()
     {
-        // Apply maximized state after window opens (doesn't work reliably in constructor)
-        if (AppSettings.Instance.ChooseWindowMaximized)
+        // Best effort: ask the WM for the maximized state
+        if (WindowState != WindowState.Maximized)
         {
             WindowState = WindowState.Maximized;
         }
+
+        // Deterministic: size the window to the screen working area directly,
+        // so it is full-size even if the WM ignores the maximize request for a
+        // freshly mapped dialog.
+        FitToWorkingArea();
+
+        if (_maximizeRevealScheduled)
+        {
+            return;
+        }
+        _maximizeRevealScheduled = true;
+
+        var attempts = 0;
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+        timer.Tick += (_, _) =>
+        {
+            attempts++;
+            if (!IsFullSize())
+            {
+                FitToWorkingArea();
+            }
+
+            // Reveal only once the window really is full-size (or after 1s)
+            if (IsFullSize() || attempts >= 20)
+            {
+                timer.Stop();
+                Opacity = 1.0;
+            }
+        };
+        timer.Start();
+    }
+
+    /// <summary>Resizes/moves the window to fill the screen's working area.</summary>
+    private void FitToWorkingArea()
+    {
+        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        if (screen == null) return;
+
+        var area = screen.WorkingArea;
+        var scaling = screen.Scaling > 0 ? screen.Scaling : (RenderScaling > 0 ? RenderScaling : 1.0);
+
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        Width = area.Width / scaling;
+        Height = area.Height / scaling;
+        Position = new PixelPoint(area.X, area.Y);
+    }
+
+    private bool IsFullSize()
+    {
+        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        if (screen == null) return true;
+
+        var scaling = screen.Scaling > 0 ? screen.Scaling : 1.0;
+        return ClientSize.Width >= (screen.WorkingArea.Width / scaling) - 4;
+    }
+
+    private async void OnWindowOpened(object? sender, EventArgs e)
+    {
+        // Always open maximized: the chooser is designed for a wide window and
+        // is awkward to use (and to reach the buttons in) when narrow
+        EnsureMaximized();
 
         // Restore last selected tab
         var lastTab = AppSettings.Instance.ChooseQueryTab;
@@ -362,9 +438,6 @@ public class ChooseMusicWindow : Window
             Margin = new Thickness(0, 5, 10, 5)
         };
         Grid.SetRow(topBar, 0);
-
-        _tbxTotals = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) };
-        topBar.Children.Add(_tbxTotals);
 
         topBar.Children.Add(new Label
         {
@@ -609,8 +682,6 @@ public class ChooseMusicWindow : Window
         _playlistSongsBrowseControl = null;
         _lbBooks.ItemsSource = null;
 
-        _tbxTotals.Text = "Loading...";
-
         try
         {
             var provider = new PdfToImageDocumentProvider();
@@ -623,7 +694,6 @@ public class ChooseMusicWindow : Window
         }
         catch (Exception ex)
         {
-            _tbxTotals.Text = $"Error: {ex.Message}";
             Logger.LogException("Failed to load PDF metadata from folder", ex);
         }
     }
@@ -2528,7 +2598,6 @@ public class ChooseMusicWindow : Window
         }
 
         _lbBooks.ItemsSource = items;
-        _tbxTotals.Text = $"#Books = {_bookItemCache.Count} #Songs = {totalSongs:n0} #Pages = {totalPages:n0} #Fav={totalFavs:n0}";
     }
 
     private Control CreateBookItemControl(BookItemCache cacheItem)
@@ -2618,7 +2687,6 @@ public class ChooseMusicWindow : Window
         }
 
         _lbBooks.ItemsSource = items;
-        _tbxTotals.Text = $"#Books = {items.Count} #Songs = {totalSongs:n0} #Pages = {totalPages:n0} #Fav={totalFavs:n0}";
     }
 
     /// <summary>
@@ -2714,7 +2782,6 @@ public class ChooseMusicWindow : Window
         }
 
         _lbBooks.ItemsSource = items;
-        _tbxTotals.Text = $"#Books = {items.Count} (demo mode)";
     }
 
     private Bitmap GenerateBookCoverBitmap(int width, int height, Random random, string title, int index)
