@@ -169,6 +169,9 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
                 WindowState = WindowState.Maximized;
                 Trace.WriteLine($"PdfViewerWindow Opened: Set WindowState to Maximized");
             }
+
+            // Validate the saved restore geometry even when starting maximized/full screen
+            ClampWindowToVisibleScreen();
             UpdateResponsiveLayout(Bounds.Width);
         };
         
@@ -836,7 +839,10 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
                     
                     await Dispatcher.UIThread.InvokeAsync(() =>
                     {
-                        if (_currentPdfMetaData == pdfMetaData && newThumb is Bitmap bmp && _imgThumb != null)
+                        // Skip if a newer thumbnail has replaced this one (e.g. after a rotate)
+                        if (_currentPdfMetaData == pdfMetaData &&
+                            ReferenceEquals(pdfMetaData.ThumbnailCache, newThumb) &&
+                            newThumb is Bitmap bmp && _imgThumb != null)
                         {
                             _imgThumb.Source = bmp;
                         }
@@ -1903,7 +1909,10 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
 
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (_currentPdfMetaData == pdfMetaData && thumbnail is Bitmap bmp && _imgThumb != null)
+                // Skip if a newer thumbnail has replaced this one in the meantime
+                if (_currentPdfMetaData == pdfMetaData &&
+                    ReferenceEquals(pdfMetaData.ThumbnailCache, thumbnail) &&
+                    thumbnail is Bitmap bmp && _imgThumb != null)
                 {
                     _imgThumb.Source = bmp;
                 }
