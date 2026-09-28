@@ -230,14 +230,13 @@ public class GestureHandler
         // Skip tap/navigation processing if the event was already handled (e.g., by InkCanvas eraser)
         if (_activePointers.Count == 1 && !wasGesturing && !IsDisabled && !_hasMoved && !e.Handled)
         {
-            var isDoubleTap = IsDoubleTap(pos);
-
             if (IsTransformed)
             {
                 // While zoomed, single taps never navigate (that caused
                 // accidental page turns); a double tap resets to fit-to-window.
-                if (isDoubleTap)
+                if (IsDoubleTap(pos))
                 {
+                    _lastTapTimeMs = long.MinValue;
                     Log("  -> DOUBLE-TAP (reset to fit)");
                     DoubleTapped?.Invoke(this, pos);
                 }
@@ -246,15 +245,13 @@ public class GestureHandler
                     Log("  -> Tap while transformed - no navigation");
                 }
             }
-            else if (isDoubleTap)
-            {
-                // Second tap of a double-tap while fit: don't turn two pages for one gesture
-                Log("  -> second tap of double-tap - no navigation");
-            }
             else
             {
-                // Fit-to-window: navigate immediately - page turns must stay instant.
-                Log("  -> NAVIGATE (single tap)");
+                // Fit-to-window: navigate on every tap - page turns must stay
+                // instant. Double-tap detection only applies while zoomed, where
+                // it resets the zoom; pairing fit taps would swallow page turns.
+                _lastTapTimeMs = long.MinValue;
+                Log("  -> NAVIGATE (tap)");
                 HandleTapNavigation(pos, e);
             }
         }
