@@ -183,9 +183,8 @@ public class ChooseMusicWindow : Window
 
         SizeChanged += (s, e) => UpdateTopBarLayout(e.NewSize.Width);
 
-        // Maximize before the window is shown so it maps maximized without a
-        // visible resize; setting it only in Opened can be ignored by the WM.
-        // Start transparent so any WM maximize animation is not visible.
+        // Size before show so it maps full-size; start transparent so any WM
+        // maximize animation is not visible.
         Opacity = 0;
         EnsureMaximized();
 
@@ -246,10 +245,7 @@ public class ChooseMusicWindow : Window
 
     private const double NarrowTopBarWidth = 1100;
 
-    /// <summary>
-    /// Wraps a tab's content so its top padding can be adjusted when the folder
-    /// selector row overlays the top of the tab content area.
-    /// </summary>
+    // Wraps a tab's content so its top padding can be adjusted
     private Control WrapTabContent(Control content)
     {
         var wrapper = new Border { Child = content };
@@ -257,13 +253,8 @@ public class ChooseMusicWindow : Window
         return wrapper;
     }
 
-    /// <summary>
-    /// Top area layout:
-    /// wide   - tab headers on the left, folder selector and buttons right-aligned
-    ///          in the same row;
-    /// narrow - tab headers and buttons share the top row, the folder selector
-    ///          sits on the second row (tab content is pushed down to match).
-    /// </summary>
+    // Responsive top area. Wide: tabs, folder and buttons in one row.
+    // Narrow/portrait: tabs + folder, then filter + buttons.
     private void UpdateTopBarLayout(double width)
     {
         if (_folderGroup == null || _buttonsGroup == null) return;
@@ -336,10 +327,7 @@ public class ChooseMusicWindow : Window
         UpdateTabContentOffset();
     }
 
-    /// <summary>
-    /// In narrow mode the filter lives in the top area, so only show it on the
-    /// Books tab (in wide mode it is part of the Books content itself).
-    /// </summary>
+    // In narrow mode the filter only applies to the Books tab
     private void UpdateFilterVisibility()
     {
         if (_filterGroup == null || _tabControl == null) return;
@@ -352,11 +340,7 @@ public class ChooseMusicWindow : Window
         return _tabHeaderPresenter;
     }
 
-    /// <summary>
-    /// Offsets the tab content so it starts below the folder row when that row
-    /// overlaps the top of the content area (narrow layout). Computed from the
-    /// actual header/content geometry so no blank space is wasted.
-    /// </summary>
+    // Pushes tab content below the overlay rows (computed from real geometry)
     private void UpdateTabContentOffset()
     {
         double needed = 0;
@@ -367,7 +351,7 @@ public class ChooseMusicWindow : Window
             {
                 var headerBottom = (header.TranslatePoint(default, _tabControl)?.Y ?? 0) + header.Bounds.Height;
 
-                // Bottom of the lowest overlay row element (folder, filter or buttons)
+                // Bottom of the lowest overlay row
                 double rowBottom = 0;
                 foreach (var control in new Control[] { _folderGroup, _filterGroup, _buttonsGroup })
                 {
@@ -389,13 +373,8 @@ public class ChooseMusicWindow : Window
         }
     }
 
-    /// <summary>
-    /// Maximizes the window. The state is applied immediately (before the window
-    /// is mapped where possible) and re-applied briefly after it is shown: some
-    /// window managers ignore maximize requests for freshly mapped dialogs, and
-    /// others (mutter) animate them, which would show the small default size
-    /// first. The window starts transparent and is revealed once maximized.
-    /// </summary>
+    // Opens full size even if the WM ignores maximize requests for a fresh
+    // dialog: sizes to the working area directly and reveals once full-size.
     private void EnsureMaximized()
     {
         // Best effort: ask the WM for the maximized state
@@ -404,9 +383,8 @@ public class ChooseMusicWindow : Window
             WindowState = WindowState.Maximized;
         }
 
-        // Deterministic: size the window to the screen working area directly,
-        // so it is full-size even if the WM ignores the maximize request for a
-        // freshly mapped dialog.
+        // Size to the working area directly, so it is full-size even if the WM
+        // ignores the maximize request
         FitToWorkingArea();
 
         if (_maximizeRevealScheduled)
@@ -435,8 +413,7 @@ public class ChooseMusicWindow : Window
                 FitToWorkingArea();
             }
 
-            // Reveal only once the window really is full-size (or after ~1s);
-            // Normal priority so a busy dispatcher cannot starve the reveal
+            // Reveal once full-size (or after ~1s)
             if (IsFullSize() || attempts >= 20)
             {
                 _maximizeTimer.Stop();
@@ -447,7 +424,7 @@ public class ChooseMusicWindow : Window
         _maximizeTimer.Start();
     }
 
-    /// <summary>Resizes/moves the window to fill the screen's working area.</summary>
+    // Fills the owner screen's working area
     private void FitToWorkingArea()
     {
         if (PlatformImpl == null) return;
@@ -456,7 +433,6 @@ public class ChooseMusicWindow : Window
         if (screens == null) return;
 
         // Prefer the owner's screen so the chooser stays on the same monitor
-        // (Owner is only available after ShowDialog has started)
         var screen = (Owner != null ? screens.ScreenFromWindow(Owner) : null)
                      ?? screens.ScreenFromWindow(this)
                      ?? screens.Primary;
@@ -631,9 +607,7 @@ public class ChooseMusicWindow : Window
 
         grid.Children.Add(_tabControl);
 
-        // Top area is responsive (see UpdateTopBarLayout): wide = one right-aligned
-        // row with folder selector + buttons; narrow = folder selector above, tabs
-        // and buttons sharing the next row.
+        // Top area layout lives in UpdateTopBarLayout
         _folderGroup = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -2841,7 +2815,7 @@ public class ChooseMusicWindow : Window
         UpdateTotalsText(displayItems);
     }
 
-    /// <summary>Updates the totals shown at the right of the books toolbar.</summary>
+    // Updates the totals shown at the right of the books toolbar
     private void UpdateTotalsText(IEnumerable<BookItemCache> items)
     {
         if (_tbxTotals == null) return;

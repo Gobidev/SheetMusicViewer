@@ -5,20 +5,14 @@ namespace SheetMusicViewer.Desktop;
 
 /// <summary>
 /// Pure math for clamping the pinch/pan transform of a page viewport.
-/// Deliberately free of UI controls so it can be unit tested on every platform.
-///
-/// The transformed content is assumed to be exactly the size of the viewport
-/// when the transform is identity (the page bitmap is letterboxed inside by
-/// the Image control's Uniform stretch).
+/// Free of UI controls so it can be unit tested on every platform.
 /// </summary>
 public static class GestureTransformMath
 {
     public const double DefaultMinScale = 1.0;
     public const double DefaultMaxScale = 8.0;
 
-    /// <summary>
-    /// Clamps a scale factor, normalising NaN/infinity/zero to 1.
-    /// </summary>
+    /// <summary>Clamps a scale factor, normalising invalid values to 1.</summary>
     public static double ClampScale(double scale, double minScale = DefaultMinScale, double maxScale = DefaultMaxScale)
     {
         if (minScale > maxScale)
@@ -39,15 +33,9 @@ public static class GestureTransformMath
         => Clamp(matrix, viewport, new Rect(viewport), minScale, maxScale);
 
     /// <summary>
-    /// Clamps a uniform scale+translation matrix against the real content rectangle
-    /// (in viewport coordinates) so the content can never be dragged off-screen:
-    /// <list type="bullet">
-    /// <item>scale is clamped to [minScale, maxScale]</item>
-    /// <item>when the scaled content is larger than the viewport in an axis,
-    /// translation is limited so that axis stays fully covered (no gap)</item>
-    /// <item>when it is smaller in an axis, the content is centered on that axis</item>
-    /// </list>
-    /// Rotation/skew are not used by the gesture handler and are discarded.
+    /// Clamps a uniform scale+translation matrix against the real content rect so
+    /// the content cannot leave the viewport: covered axes stay covered, smaller
+    /// axes are centered. Rotation/skew are discarded.
     /// </summary>
     public static Matrix Clamp(Matrix matrix, Size viewport, Rect content, double minScale = DefaultMinScale, double maxScale = DefaultMaxScale)
     {
@@ -80,28 +68,18 @@ public static class GestureTransformMath
         return new Matrix(scale, 0, 0, scale, tx, ty);
     }
 
-    /// <summary>
-    /// Applies a screen-space pan to an existing transform. The delta is applied
-    /// after the current transform, so it is not scaled by the current zoom.
-    /// </summary>
+    /// <summary>Applies a screen-space pan (the delta is not scaled by the zoom).</summary>
     public static Matrix ApplyPan(Matrix current, double dx, double dy)
         => current * Matrix.CreateTranslation(dx, dy);
 
-    /// <summary>
-    /// Zooms about a point in screen space, keeping the content under
-    /// <paramref name="center"/> stationary. Correct for any existing transform
-    /// (the pivot is applied in screen space, after the current transform).
-    /// </summary>
+    /// <summary>Zooms about a screen-space point, keeping it stationary.</summary>
     public static Matrix ApplyZoom(Matrix current, Point center, double factor)
         => current *
            Matrix.CreateTranslation(-center.X, -center.Y) *
            Matrix.CreateScale(factor, factor) *
            Matrix.CreateTranslation(center.X, center.Y);
 
-    /// <summary>
-    /// True when the matrix is (within a small epsilon) the identity transform,
-    /// i.e. the page is shown fitted to the viewport.
-    /// </summary>
+    /// <summary>True when the matrix is (within epsilon) the identity transform.</summary>
     public static bool IsIdentity(Matrix matrix)
     {
         const double epsilon = 0.001;

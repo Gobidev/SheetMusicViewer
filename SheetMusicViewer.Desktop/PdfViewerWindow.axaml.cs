@@ -134,8 +134,8 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         
         Trace.WriteLine($"PdfViewerWindow constructor: WindowMaximized={settings.WindowMaximized} from {AppSettings.SettingsPath}");
         
-        // Apply window position/size from settings. Negative coordinates are
-        // valid on multi-monitor setups (monitor arranged left/above primary).
+        // Apply window position/size from settings; negative coordinates are
+        // valid for monitors left/above the primary.
         if (settings.WindowWidth > 0 && settings.WindowHeight > 0)
         {
             Width = settings.WindowWidth;
@@ -1662,12 +1662,8 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         }
     }
 
-    /// <summary>
-    /// Returns the visible page content rectangle (union of the rendered page
-    /// canvases) in the coordinate space of the gesture target (_dpPage).
-    /// Pages are letterboxed inside the target, so this is smaller than the
-    /// viewport for e.g. portrait pages in a landscape window.
-    /// </summary>
+    // Visible page content rect (union of the page canvases) in _dpPage coordinates.
+    // Smaller than the viewport because pages are letterboxed.
     private Rect GetPageContentBounds()
     {
         if (_dpPage == null) return default;
@@ -1692,11 +1688,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         return union ?? default;
     }
 
-    /// <summary>
-    /// Bounds of <paramref name="visual"/> expressed in <paramref name="ancestor"/>
-    /// coordinates. Only layout bounds are considered (no render transforms), which
-    /// is what the content provider needs: the render transform is on the ancestor.
-    /// </summary>
+    // Bounds of a visual expressed in ancestor coordinates (layout bounds only)
     private static Rect GetBoundsRelativeTo(Visual visual, Visual ancestor)
     {
         var rect = visual.Bounds;
@@ -1908,10 +1900,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         await ShowPageAsync(CurrentPageNumber);
     }
 
-    /// <summary>
-    /// Re-renders the toolbar thumbnail after it has been invalidated
-    /// (e.g. after rotating the first volume).
-    /// </summary>
+    // Re-renders the toolbar thumbnail after it was invalidated (e.g. after rotate)
     private async Task RefreshToolbarThumbnailAsync(PdfMetaDataReadResult pdfMetaData)
     {
         try
@@ -1967,9 +1956,8 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             {
                 WindowState = WindowState.Normal;
 
-                // Restore the geometry from before full screen, falling back to
-                // the persisted settings for the first toggle after launch.
-                // Position is not supported on every backend, so guard it.
+                // Restore pre-fullscreen geometry (or settings); Position is not
+                // supported on every backend, so guard it.
                 try
                 {
                     if (_hasNormalGeometry && _normalGeometryWidth > 0 && _normalGeometryHeight > 0)
@@ -1999,13 +1987,8 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         }
     }
 
-    /// <summary>
-    /// Ensures the geometry that will be used when the window is in Normal state is
-    /// visible on a currently connected screen. Handles a monitor being removed,
-    /// a display scaling change, or a tablet rotated/undocked since the settings
-    /// were saved. When the window is maximized/full screen the saved restore
-    /// geometry is validated instead (and written back to settings).
-    /// </summary>
+    // Keeps the saved/current window geometry on a connected screen (monitor
+    // removal, scaling change, rotation); validates the restore geometry too.
     private void ClampWindowToVisibleScreen()
     {
         try
@@ -2081,16 +2064,12 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         }
     }
 
-    // On screens narrower than this, descriptions and then the slider collapse
-    // so that the Chooser button and menu always stay on-screen.
+    // Below this width the descriptions and then the slider collapse
     private const double CompactLayoutWidth = 900;
     private const double HideSliderWidth = 760;
 
-    /// <summary>
-    /// Adapts the top overlay to narrow screens (e.g. a tablet in portrait):
-    /// the slider collapses first, then the descriptions, so the Chooser button
-    /// and menu always stay reachable. The title is ellipsized rather than clipped.
-    /// </summary>
+    // Adapts the top overlay to narrow screens: descriptions and then the
+    // slider collapse so the Chooser button/menu stay reachable.
     private void UpdateResponsiveLayout(double width)
     {
         if (width <= 0) return;

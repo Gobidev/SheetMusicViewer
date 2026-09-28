@@ -104,11 +104,7 @@ public class InkCanvasControl : Panel
     /// </summary>
     public bool CanRedo => _redoStack.Count > 0;
 
-    /// <summary>
-    /// The rectangle (in this control's coordinates) actually covered by the page
-    /// bitmap, accounting for the Uniform letterboxing inside the control.
-    /// Used to clamp pan/zoom so the visible page cannot be moved off-screen.
-    /// </summary>
+    /// <summary>Page bitmap rect in this control's coordinates (Uniform fit).</summary>
     public Rect PageContentBounds
     {
         get

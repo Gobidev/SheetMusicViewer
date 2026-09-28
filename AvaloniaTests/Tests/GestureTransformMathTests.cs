@@ -4,11 +4,7 @@ using SheetMusicViewer.Desktop;
 
 namespace AvaloniaTests.Tests;
 
-/// <summary>
-/// Unit tests for the pinch/pan clamping math used by GestureHandler.
-/// These are pure-math tests and do not require an Avalonia UI thread,
-/// so they run on Windows, Linux and macOS.
-/// </summary>
+/// <summary>Unit tests for the pinch/pan clamping math used by GestureHandler.</summary>
 [TestClass]
 [TestCategory("Unit")]
 public class GestureTransformMathTests

@@ -40,13 +40,11 @@ public class GestureHandler
     private Point _lastTapLocation;
     private long _lastTapTimeMs = long.MinValue;
 
-    /// <summary>Maximum time between taps to count as a double-tap (ms).</summary>
     public double DoubleTapTimeMs { get; set; } = 400;
 
-    /// <summary>Maximum distance between taps to count as a double-tap (px).</summary>
     public double DoubleTapDistancePx { get; set; } = 40;
 
-    /// <summary>Minimum/maximum zoom relative to the fit-to-window scale.</summary>
+    // Zoom relative to the fit-to-window scale
     public double MinScale { get; set; } = GestureTransformMath.DefaultMinScale;
     public double MaxScale { get; set; } = GestureTransformMath.DefaultMaxScale;
     
@@ -54,8 +52,7 @@ public class GestureHandler
     public bool EnableLogging { get; set; }
     public event EventHandler<string>? LogMessage;
 
-    // Cached content rect (in target coordinates) for the clamp; invalidated on
-    // layout changes and on page navigation
+    // Cached content rect for the clamp; invalidated on layout/page changes
     private Rect? _cachedContentBounds;
     
     private void Log(string message)
@@ -81,16 +78,9 @@ public class GestureHandler
     /// </summary>
     public bool IsDisabled { get; set; }
 
-    /// <summary>
-    /// True when the page is zoomed in beyond fit. (Panning at fit does not
-    /// count, so taps keep navigating while the page is simply centered.)
-    /// </summary>
+    // True when zoomed in beyond fit (panning at fit does not count)
     public bool IsTransformed => GetCurrentMatrix().M11 > 1.001;
 
-    /// <summary>
-    /// Clears the cached content rectangle. Call when the page layout changes
-    /// (page navigation), so the clamp uses the new page bounds.
-    /// </summary>
     public void InvalidateContentBounds() => _cachedContentBounds = null;
     
     /// <summary>
@@ -98,11 +88,7 @@ public class GestureHandler
     /// </summary>
     public int NumPagesPerView { get; set; } = 2;
 
-    /// <summary>
-    /// Optional provider for the visible content rectangle in target coordinates
-    /// (e.g. the letterboxed page area inside the viewport). When null or empty,
-    /// the whole target is assumed to be content.
-    /// </summary>
+    // Optional provider for the visible content rect (letterboxed page area)
     public Func<Rect>? ContentBoundsProvider { get; set; }
 
     public GestureHandler(Control target, bool enableLogging = false)
@@ -117,9 +103,8 @@ public class GestureHandler
             _target.RenderTransform = new MatrixTransform(Matrix.Identity);
         }
 
-        // The clamp/zoom math below assumes a top-left transform origin.
-        // Avalonia defaults RenderTransformOrigin to Center, which shifts every
-        // transform by origin*(1-scale) and would defeat the clamping.
+        // The clamp math assumes a top-left origin; Avalonia defaults to Center,
+        // which would shift every transform and defeat the clamping.
         _target.RenderTransformOrigin = RelativePoint.TopLeft;
         
         // Wire up pointer events using AddHandler to properly see handled events
@@ -400,19 +385,13 @@ public class GestureHandler
         }
     }
 
-    /// <summary>
-    /// Applies a transform matrix after clamping it to the viewport, so the page
-    /// can never be dragged/pinched fully off-screen or shrunk into a corner.
-    /// </summary>
+    // Applies a matrix after clamping it to the viewport
     private void SetTransform(Matrix matrix)
     {
         _target.RenderTransform = new MatrixTransform(ClampMatrix(matrix));
     }
 
-    /// <summary>
-    /// Re-clamps the current transform against the current viewport size.
-    /// Called when the window is resized or the tablet is rotated.
-    /// </summary>
+    // Re-clamps the current transform (called on resize/rotation)
     public void ClampTransform()
     {
         var current = GetCurrentMatrix();

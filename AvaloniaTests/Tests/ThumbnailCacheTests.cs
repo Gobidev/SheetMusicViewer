@@ -4,11 +4,7 @@ using SheetMusicLib;
 
 namespace AvaloniaTests.Tests;
 
-/// <summary>
-/// Unit tests for the thumbnail cache generation guard, which prevents a
-/// thumbnail render that started before ClearThumbnailCache from overwriting
-/// the cache (e.g. rotating a volume while its thumbnail is still rendering).
-/// </summary>
+/// <summary>Unit tests for the thumbnail cache generation guard.</summary>
 [TestClass]
 [TestCategory("Unit")]
 public class ThumbnailCacheTests
