@@ -49,6 +49,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     private bool _isThumbnailLoadingInProgress;
     private int _cacheLoadingCount;
     private string _cacheStatus = string.Empty;
+    private string _cachePendingStatus = string.Empty;
 
     // PDF metadata
     private string _rootMusicFolder = string.Empty;
@@ -1429,26 +1430,13 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             if (cacheDisabled)
             {
                 // Show that cache is disabled
-                if (pendingCount > 0)
-                {
-                    CacheStatus = $"⚠ No cache ⏳{pendingCount}";
-                }
-                else
-                {
-                    CacheStatus = "⚠ No cache";
-                }
-            }
-            else if (pendingCount > 0)
-            {
-                CacheStatus = $"C:{cachedCount} ⏳{pendingCount}";
-            }
-            else if (cachedCount > 0)
-            {
-                CacheStatus = $"C:{cachedCount}";
+                CacheStatus = "⚠ No cache";
+                CachePendingStatus = pendingCount > 0 ? $"⏳{pendingCount}" : string.Empty;
             }
             else
             {
-                CacheStatus = string.Empty;
+                CacheStatus = cachedCount > 0 || pendingCount > 0 ? $"C:{cachedCount}" : string.Empty;
+                CachePendingStatus = pendingCount > 0 ? $"⏳{pendingCount}" : string.Empty;
             }
         });
     }
@@ -2537,6 +2525,18 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         set
         {
             _cacheStatus = value;
+            OnPropertyChanged();
+        }
+    }
+
+    // The pending part is kept separate so its fixed slot in the toolbar does
+    // not change width while pages render (which would shift the whole bar).
+    public string CachePendingStatus
+    {
+        get => _cachePendingStatus;
+        set
+        {
+            _cachePendingStatus = value;
             OnPropertyChanged();
         }
     }
