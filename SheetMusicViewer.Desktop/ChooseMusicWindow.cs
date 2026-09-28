@@ -38,6 +38,8 @@ public class ChooseMusicWindow : Window
     private bool _narrowLayout;
     private double _tabContentOffset = -1;
     private readonly List<Border> _tabContentWrappers = new();
+    private DispatcherTimer? _maximizeTimer;
+    private ItemsPresenter? _tabHeaderPresenter;
     private ListBox _lbBooks;
     private TextBlock _tbxTotals;
     private ComboBox _cboRootFolder;
@@ -330,7 +332,24 @@ public class ChooseMusicWindow : Window
         }
 
         _narrowLayout = narrow;
+        UpdateFilterVisibility();
         UpdateTabContentOffset();
+    }
+
+    /// <summary>
+    /// In narrow mode the filter lives in the top area, so only show it on the
+    /// Books tab (in wide mode it is part of the Books content itself).
+    /// </summary>
+    private void UpdateFilterVisibility()
+    {
+        if (_filterGroup == null || _tabControl == null) return;
+        _filterGroup.IsVisible = !_narrowLayout || _tabControl.SelectedIndex == 0;
+    }
+
+    private ItemsPresenter? GetTabHeaderPresenter()
+    {
+        _tabHeaderPresenter ??= _tabControl.GetVisualDescendants().OfType<ItemsPresenter>().FirstOrDefault();
+        return _tabHeaderPresenter;
     }
 
     /// <summary>
@@ -343,7 +362,7 @@ public class ChooseMusicWindow : Window
         double needed = 0;
         if (_narrowLayout && _folderGroup != null && _tabControl != null)
         {
-            var header = _tabControl.GetVisualDescendants().OfType<ItemsPresenter>().FirstOrDefault();
+            var header = GetTabHeaderPresenter();
             if (header != null)
             {
                 var headerBottom = (header.TranslatePoint(default, _tabControl)?.Y ?? 0) + header.Bounds.Height;
@@ -397,33 +416,50 @@ public class ChooseMusicWindow : Window
         _maximizeRevealScheduled = true;
 
         var attempts = 0;
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
-        timer.Tick += (_, _) =>
+        _maximizeTimer = new DispatcherTimer(DispatcherPriority.Normal)
         {
+            Interval = TimeSpan.FromMilliseconds(50)
+        };
+        _maximizeTimer.Tick += (_, _) =>
+        {
+            // The timer can outlive the window if it is closed quickly
+            if (PlatformImpl == null || _maximizeTimer == null)
+            {
+                _maximizeTimer?.Stop();
+                return;
+            }
+
             attempts++;
             if (!IsFullSize())
             {
                 FitToWorkingArea();
             }
 
-            // Reveal only once the window really is full-size (or after 1s)
+            // Reveal only once the window really is full-size (or after ~1s);
+            // Normal priority so a busy dispatcher cannot starve the reveal
             if (IsFullSize() || attempts >= 20)
             {
-                timer.Stop();
+                _maximizeTimer.Stop();
+                _maximizeTimer = null;
                 Opacity = 1.0;
             }
         };
-        timer.Start();
+        _maximizeTimer.Start();
     }
 
     /// <summary>Resizes/moves the window to fill the screen's working area.</summary>
     private void FitToWorkingArea()
     {
+        if (PlatformImpl == null) return;
+
+        var screens = Screens;
+        if (screens == null) return;
+
         // Prefer the owner's screen so the chooser stays on the same monitor
         // (Owner is only available after ShowDialog has started)
-        var screen = (Owner != null ? Screens.ScreenFromWindow(Owner) : null)
-                     ?? Screens.ScreenFromWindow(this)
-                     ?? Screens.Primary;
+        var screen = (Owner != null ? screens.ScreenFromWindow(Owner) : null)
+                     ?? screens.ScreenFromWindow(this)
+                     ?? screens.Primary;
         if (screen == null) return;
 
         var area = screen.WorkingArea;
@@ -437,13 +473,22 @@ public class ChooseMusicWindow : Window
 
     private bool IsFullSize()
     {
-        var screen = (Owner != null ? Screens.ScreenFromWindow(Owner) : null)
-                     ?? Screens.ScreenFromWindow(this)
-                     ?? Screens.Primary;
+        if (PlatformImpl == null) return true;
+
+        var screens = Screens;
+        if (screens == null) return true;
+
+        var screen = (Owner != null ? screens.ScreenFromWindow(Owner) : null)
+                     ?? screens.ScreenFromWindow(this)
+                     ?? screens.Primary;
         if (screen == null) return true;
 
         var scaling = screen.Scaling > 0 ? screen.Scaling : 1.0;
-        return ClientSize.Width >= (screen.WorkingArea.Width / scaling) - 4;
+        var area = screen.WorkingArea;
+
+        // Allow some room for window decorations in the height check
+        return ClientSize.Width  >= (area.Width  / scaling) - 4
+            && ClientSize.Height >= (area.Height / scaling) - 80;
     }
 
     private async void OnWindowOpened(object? sender, EventArgs e)
@@ -485,6 +530,10 @@ public class ChooseMusicWindow : Window
 
     private void OnWindowClosing(object? sender, WindowClosingEventArgs e)
     {
+        // The reveal timer must not outlive the window
+        _maximizeTimer?.Stop();
+        _maximizeTimer = null;
+
         // Cleanup file watcher subscription if we're on Playlists tab
         if (_tabControl.SelectedItem is TabItem selectedTab &&
             selectedTab.Header?.ToString() == "_Playlists")
@@ -1254,6 +1303,8 @@ public class ChooseMusicWindow : Window
 
     private void OnTabSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        UpdateFilterVisibility();
+
         // Prevent re-entrancy - setting combo box selection can trigger this again
         if (_isHandlingTabChange) return;
 

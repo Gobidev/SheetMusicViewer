@@ -21,8 +21,13 @@ public static class GestureTransformMath
     /// </summary>
     public static double ClampScale(double scale, double minScale = DefaultMinScale, double maxScale = DefaultMaxScale)
     {
+        if (minScale > maxScale)
+        {
+            (minScale, maxScale) = (maxScale, minScale);
+        }
+
         if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
-            return 1.0;
+            return Math.Clamp(1.0, minScale, maxScale);
 
         return Math.Clamp(scale, minScale, maxScale);
     }

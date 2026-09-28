@@ -53,6 +53,10 @@ public class GestureHandler
     // Diagnostic logging
     public bool EnableLogging { get; set; }
     public event EventHandler<string>? LogMessage;
+
+    // Cached content rect (in target coordinates) for the clamp; invalidated on
+    // layout changes and on page navigation
+    private Rect? _cachedContentBounds;
     
     private void Log(string message)
     {
@@ -78,10 +82,16 @@ public class GestureHandler
     public bool IsDisabled { get; set; }
 
     /// <summary>
-    /// True when the page is zoomed or panned away from the fit-to-window state.
-    /// While transformed, single taps do not navigate and a double tap resets to fit.
+    /// True when the page is zoomed in beyond fit. (Panning at fit does not
+    /// count, so taps keep navigating while the page is simply centered.)
     /// </summary>
-    public bool IsTransformed => !GestureTransformMath.IsIdentity(GetCurrentMatrix());
+    public bool IsTransformed => GetCurrentMatrix().M11 > 1.001;
+
+    /// <summary>
+    /// Clears the cached content rectangle. Call when the page layout changes
+    /// (page navigation), so the clamp uses the new page bounds.
+    /// </summary>
+    public void InvalidateContentBounds() => _cachedContentBounds = null;
     
     /// <summary>
     /// Minimum number of pages to navigate. Usually 1 or 2.
@@ -239,10 +249,11 @@ public class GestureHandler
 
             if (IsTransformed)
             {
-                // While zoomed/panned, single taps never navigate (that caused
+                // While zoomed, single taps never navigate (that caused
                 // accidental page turns); a double tap resets to fit-to-window.
                 if (isDoubleTap)
                 {
+                    _lastTapTimeMs = long.MinValue;
                     Log("  -> DOUBLE-TAP (reset to fit)");
                     DoubleTapped?.Invoke(this, pos);
                 }
@@ -254,6 +265,7 @@ public class GestureHandler
             else if (isDoubleTap)
             {
                 // Second tap of a double-tap while fit: don't turn two pages for one gesture
+                _lastTapTimeMs = long.MinValue;
                 Log("  -> second tap of double-tap - no navigation");
             }
             else
@@ -265,8 +277,13 @@ public class GestureHandler
         }
         
         _activePointers.Remove(pointerId);
-        
-        if (_activePointers.Count < 2)
+
+        if (_activePointers.Count == 2 && !_isGesturing)
+        {
+            // Dropped from 3+ fingers back to 2: restart with a fresh baseline
+            StartGesture();
+        }
+        else if (_activePointers.Count < 2)
         {
             if (_isGesturing) Log("  -> Gesture ENDED");
             _isGesturing = false;
@@ -289,6 +306,12 @@ public class GestureHandler
         if (_activePointers.Count < 2)
         {
             _isGesturing = false;
+        }
+
+        if (_activePointers.Count == 0)
+        {
+            _gestureWasPerformed = false;
+            _hasMoved = false;
         }
     }
 
@@ -373,6 +396,7 @@ public class GestureHandler
             var currentMatrix = GetCurrentMatrix();
             SetTransform(GestureTransformMath.ApplyPan(currentMatrix, deltaX, deltaY));
             _lastDragPosition = currentPos;
+            _lastTapTimeMs = long.MinValue; // a pan is not part of a double-tap
         }
     }
 
@@ -410,7 +434,7 @@ public class GestureHandler
         var viewport = _target.Bounds.Size;
         if (viewport.Width <= 0 || viewport.Height <= 0) return matrix;
 
-        var content = ContentBoundsProvider?.Invoke() ?? default;
+        var content = _cachedContentBounds ??= (ContentBoundsProvider?.Invoke() ?? default);
         return GestureTransformMath.Clamp(matrix, viewport, content, MinScale, MaxScale);
     }
 
@@ -418,6 +442,8 @@ public class GestureHandler
     {
         if (e.Property == Visual.BoundsProperty)
         {
+            // Bounds change implies a (re)layout: the content rect may have moved
+            _cachedContentBounds = null;
             ClampTransform();
         }
     }

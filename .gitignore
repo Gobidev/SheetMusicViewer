@@ -261,3 +261,6 @@ __pycache__/
 *.pyc
 # Tesseract language data - downloaded automatically by MSBuild (see Desktop csproj)
 tessdata/
+
+# Local publish output
+dist/

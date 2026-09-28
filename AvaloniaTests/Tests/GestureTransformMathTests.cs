@@ -98,6 +98,18 @@ public class GestureTransformMathTests
     }
 
     [TestMethod]
+    public void ClampScale_InvalidValueRespectsCustomRange()
+    {
+        Assert.AreEqual(2.0, GestureTransformMath.ClampScale(double.NaN, minScale: 2, maxScale: 5));
+    }
+
+    [TestMethod]
+    public void ClampScale_SwappedBoundsDoNotThrow()
+    {
+        Assert.AreEqual(2.0, GestureTransformMath.ClampScale(2, minScale: 5, maxScale: 1));
+    }
+
+    [TestMethod]
     public void Clamp_LetterboxedContentCannotBePannedOffScreen()
     {
         // Portrait page (300x600) centered in a landscape viewport (800x600)

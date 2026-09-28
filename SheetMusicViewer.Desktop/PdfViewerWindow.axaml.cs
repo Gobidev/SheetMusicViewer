@@ -99,6 +99,12 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     // Window state to restore when leaving full screen
     private WindowState _windowStateBeforeFullScreen = WindowState.Maximized;
 
+    // Current geometry to restore when leaving full screen (captured on entry)
+    private double _normalGeometryWidth;
+    private double _normalGeometryHeight;
+    private PixelPoint _normalGeometryPosition;
+    private bool _hasNormalGeometry;
+
     private class PageCacheEntry
     {
         public CancellationTokenSource Cts { get; } = new();
@@ -128,16 +134,14 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         
         Trace.WriteLine($"PdfViewerWindow constructor: WindowMaximized={settings.WindowMaximized} from {AppSettings.SettingsPath}");
         
-        // Apply window position/size from settings
+        // Apply window position/size from settings. Negative coordinates are
+        // valid on multi-monitor setups (monitor arranged left/above primary).
         if (settings.WindowWidth > 0 && settings.WindowHeight > 0)
         {
             Width = settings.WindowWidth;
             Height = settings.WindowHeight;
         }
-        if (settings.WindowLeft >= 0 && settings.WindowTop >= 0)
-        {
-            Position = new Avalonia.PixelPoint((int)settings.WindowLeft, (int)settings.WindowTop);
-        }
+        Position = new Avalonia.PixelPoint((int)settings.WindowLeft, (int)settings.WindowTop);
         
         // Note: WindowState is set in Opened event because setting it in constructor 
         // doesn't work reliably in Avalonia
@@ -1396,7 +1400,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         }
     }
     
-    private void ClearCache()
+    private void ClearCache(bool keepPdfBytes = false)
     {
         foreach (var entry in _pageCache.Values)
         {
@@ -1406,7 +1410,10 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         _currentCacheAge = 0;
         
         // Clear PDF bytes cache on the current metadata to free memory
-        _currentPdfMetaData?.ClearPdfBytesCache();
+        if (!keepPdfBytes)
+        {
+            _currentPdfMetaData?.ClearPdfBytesCache();
+        }
         
         UpdateCacheStatus();
     }
@@ -1607,28 +1614,37 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     private void SetupGestureHandler()
     {
         if (_dpPage == null) return;
-        
-        _gestureHandler?.Detach();
-        
-        var userOptions = AppSettings.Instance.UserOptions;
-        _gestureHandler = new GestureHandler(_dpPage, enableLogging: false)
+
+        if (_gestureHandler == null)
         {
-            NumPagesPerView = NumPagesPerView,
-            DoubleTapTimeMs = userOptions.DoubleTapTimeThresholdMs,
-            DoubleTapDistancePx = userOptions.DoubleTapDistanceThreshold,
-            ContentBoundsProvider = GetPageContentBounds
-        };
-        
-        _gestureHandler.NavigationRequested += (s, e) =>
+            var userOptions = AppSettings.Instance.UserOptions;
+            _gestureHandler = new GestureHandler(_dpPage, enableLogging: false)
+            {
+                NumPagesPerView = NumPagesPerView,
+                DoubleTapTimeMs = userOptions.DoubleTapTimeThresholdMs,
+                DoubleTapDistancePx = userOptions.DoubleTapDistanceThreshold,
+                ContentBoundsProvider = GetPageContentBounds
+            };
+            
+            _gestureHandler.NavigationRequested += (s, e) =>
+            {
+                NavigateAsync(e.Delta);
+            };
+            
+            _gestureHandler.DoubleTapped += (s, e) =>
+            {
+                _gestureHandler.ResetTransform();
+            };
+        }
+        else
         {
-            NavigateAsync(e.Delta);
-        };
-        
-        _gestureHandler.DoubleTapped += (s, e) =>
-        {
-            _gestureHandler.ResetTransform();
-        };
-        
+            // Keep the same handler (and its tap state) across page turns
+            _gestureHandler.NumPagesPerView = NumPagesPerView;
+        }
+
+        // The page content changed; drop the cached clamp rectangle
+        _gestureHandler.InvalidateContentBounds();
+
         UpdateGestureHandlerState();
     }
 
@@ -1875,13 +1891,9 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         volume.Rotation = (volume.Rotation + 1) % 4;
         _currentPdfMetaData.IsDirty = true;
 
-        try
+        if (!PdfMetaDataCore.SaveToJson(_currentPdfMetaData))
         {
-            PdfMetaDataCore.SaveToJson(_currentPdfMetaData);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogException("Rotate: failed to save metadata", ex);
+            Logger.LogWarning("Rotate: failed to save metadata");
         }
 
         // The cached thumbnail is rendered with the volume's rotation
@@ -1892,7 +1904,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         }
 
         Trace.WriteLine($"Rotate: volume {volNo} rotation is now {volume.Rotation * 90} degrees");
-        ClearCache();
+        ClearCache(keepPdfBytes: true);
         await ShowPageAsync(CurrentPageNumber);
     }
 
@@ -1933,6 +1945,15 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
                 _windowStateBeforeFullScreen = WindowState == WindowState.Maximized
                     ? WindowState.Maximized
                     : WindowState.Normal;
+
+                if (WindowState == WindowState.Normal)
+                {
+                    // Capture the current geometry so leaving full screen restores it
+                    _normalGeometryWidth = Width;
+                    _normalGeometryHeight = Height;
+                    _normalGeometryPosition = Position;
+                    _hasNormalGeometry = true;
+                }
             }
             SystemDecorations = SystemDecorations.None;
             WindowState = WindowState.FullScreen;
@@ -1948,14 +1969,33 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             {
                 WindowState = WindowState.Normal;
 
-                // Restore the saved normal geometry and keep it on-screen
-                var settings = AppSettings.Instance;
-                if (settings.WindowWidth > 0 && settings.WindowHeight > 0)
+                // Restore the geometry from before full screen, falling back to
+                // the persisted settings for the first toggle after launch.
+                // Position is not supported on every backend, so guard it.
+                try
                 {
-                    Width = settings.WindowWidth;
-                    Height = settings.WindowHeight;
-                    Position = new PixelPoint((int)settings.WindowLeft, (int)settings.WindowTop);
+                    if (_hasNormalGeometry && _normalGeometryWidth > 0 && _normalGeometryHeight > 0)
+                    {
+                        Width = _normalGeometryWidth;
+                        Height = _normalGeometryHeight;
+                        Position = _normalGeometryPosition;
+                    }
+                    else
+                    {
+                        var settings = AppSettings.Instance;
+                        if (settings.WindowWidth > 0 && settings.WindowHeight > 0)
+                        {
+                            Width = settings.WindowWidth;
+                            Height = settings.WindowHeight;
+                            Position = new PixelPoint((int)settings.WindowLeft, (int)settings.WindowTop);
+                        }
+                    }
                 }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Restore normal geometry failed: {ex.Message}");
+                }
+
                 ClampWindowToVisibleScreen();
             }
         }
@@ -1983,7 +2023,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             var x      = restoring ? (int)settings.WindowLeft : Position.X;
             var y      = restoring ? (int)settings.WindowTop  : Position.Y;
 
-            if (width <= 0 || height <= 0) return;
+            if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 0 || height <= 0) return;
 
             // Width/Height are logical (DIPs); WorkingArea/Position are physical pixels
             var scaling = RenderScaling <= 0 ? 1.0 : RenderScaling;
