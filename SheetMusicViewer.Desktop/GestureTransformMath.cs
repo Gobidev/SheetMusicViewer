@@ -28,40 +28,70 @@ public static class GestureTransformMath
     }
 
     /// <summary>
-    /// Clamps a uniform scale+translation matrix so the content can never be
-    /// dragged fully off-screen:
+    /// Clamps a matrix assuming the visible content fills the whole viewport.
+    /// </summary>
+    public static Matrix Clamp(Matrix matrix, Size viewport, double minScale = DefaultMinScale, double maxScale = DefaultMaxScale)
+        => Clamp(matrix, viewport, new Rect(viewport), minScale, maxScale);
+
+    /// <summary>
+    /// Clamps a uniform scale+translation matrix against the real content rectangle
+    /// (in viewport coordinates) so the content can never be dragged off-screen:
     /// <list type="bullet">
     /// <item>scale is clamped to [minScale, maxScale]</item>
-    /// <item>when the scaled content is larger than the viewport, translation is
-    /// limited so no gap can appear at the edges (no panning into empty space)</item>
-    /// <item>when it is smaller, the content is centered</item>
+    /// <item>when the scaled content is larger than the viewport in an axis,
+    /// translation is limited so that axis stays fully covered (no gap)</item>
+    /// <item>when it is smaller in an axis, the content is centered on that axis</item>
     /// </list>
     /// Rotation/skew are not used by the gesture handler and are discarded.
     /// </summary>
-    public static Matrix Clamp(Matrix matrix, Size viewport, double minScale = DefaultMinScale, double maxScale = DefaultMaxScale)
+    public static Matrix Clamp(Matrix matrix, Size viewport, Rect content, double minScale = DefaultMinScale, double maxScale = DefaultMaxScale)
     {
         if (viewport.Width <= 0 || viewport.Height <= 0)
             return matrix;
 
+        if (content.Width <= 0 || content.Height <= 0 ||
+            double.IsNaN(content.Width) || double.IsNaN(content.Height))
+        {
+            content = new Rect(viewport);
+        }
+
         var scale = ClampScale(matrix.M11, minScale, maxScale);
 
-        var scaledWidth  = viewport.Width  * scale;
-        var scaledHeight = viewport.Height * scale;
+        var scaledWidth  = content.Width  * scale;
+        var scaledHeight = content.Height * scale;
 
         double tx;
         if (scaledWidth <= viewport.Width)
-            tx = (viewport.Width - scaledWidth) / 2.0;          // center
+            tx = (viewport.Width - scaledWidth) / 2.0 - content.X * scale;   // center
         else
-            tx = Math.Clamp(matrix.M31, viewport.Width - scaledWidth, 0);
+            tx = Math.Clamp(matrix.M31, viewport.Width - content.Right * scale, -content.X * scale);
 
         double ty;
         if (scaledHeight <= viewport.Height)
-            ty = (viewport.Height - scaledHeight) / 2.0;        // center
+            ty = (viewport.Height - scaledHeight) / 2.0 - content.Y * scale; // center
         else
-            ty = Math.Clamp(matrix.M32, viewport.Height - scaledHeight, 0);
+            ty = Math.Clamp(matrix.M32, viewport.Height - content.Bottom * scale, -content.Y * scale);
 
         return new Matrix(scale, 0, 0, scale, tx, ty);
     }
+
+    /// <summary>
+    /// Applies a screen-space pan to an existing transform. The delta is applied
+    /// after the current transform, so it is not scaled by the current zoom.
+    /// </summary>
+    public static Matrix ApplyPan(Matrix current, double dx, double dy)
+        => current * Matrix.CreateTranslation(dx, dy);
+
+    /// <summary>
+    /// Zooms about a point in screen space, keeping the content under
+    /// <paramref name="center"/> stationary. Correct for any existing transform
+    /// (the pivot is applied in screen space, after the current transform).
+    /// </summary>
+    public static Matrix ApplyZoom(Matrix current, Point center, double factor)
+        => current *
+           Matrix.CreateTranslation(-center.X, -center.Y) *
+           Matrix.CreateScale(factor, factor) *
+           Matrix.CreateTranslation(center.X, center.Y);
 
     /// <summary>
     /// True when the matrix is (within a small epsilon) the identity transform,

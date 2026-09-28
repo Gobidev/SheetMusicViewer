@@ -96,4 +96,95 @@ public class GestureTransformMathTests
         Assert.IsFalse(GestureTransformMath.IsIdentity(ScaleAndTranslate(1, 5, 0)));
         Assert.IsFalse(GestureTransformMath.IsIdentity(new Matrix(1, 0.2, 0, 1, 0, 0)));
     }
+
+    [TestMethod]
+    public void Clamp_LetterboxedContentCannotBePannedOffScreen()
+    {
+        // Portrait page (300x600) centered in a landscape viewport (800x600)
+        var content = new Rect(250, 0, 300, 600);
+
+        // At 3x zoom the page (900x1800) is larger than the viewport in both axes.
+        // tx range: [800 - 550*3, -250*3] = [-850, -750]
+        var pannedRight = GestureTransformMath.Clamp(
+            ScaleAndTranslate(3, 0, 0), Viewport, content);
+        Assert.AreEqual(-750, pannedRight.M31, 0.001);
+
+        var pannedLeft = GestureTransformMath.Clamp(
+            ScaleAndTranslate(3, -9999, -9999), Viewport, content);
+        Assert.AreEqual(-850, pannedLeft.M31, 0.001);
+        Assert.AreEqual(-1200, pannedLeft.M32, 0.001); // [600 - 600*3, 0]
+
+        // The page must still cover the viewport horizontally at the extremes
+        var pageRight = content.Right * 3 + pannedLeft.M31;
+        var pageLeft = content.X * 3 + pannedLeft.M31;
+        Assert.IsTrue(pageRight >= Viewport.Width - 0.001);
+        Assert.IsTrue(pageLeft <= 0.001);
+    }
+
+    [TestMethod]
+    public void Clamp_LetterboxedContentAtFitIsCentered()
+    {
+        // Page off-center; at fit it should be centered in the viewport
+        var content = new Rect(100, 0, 300, 600);
+        var result = GestureTransformMath.Clamp(ScaleAndTranslate(1, 0, 0), Viewport, content);
+
+        Assert.AreEqual(1, result.M11, 0.001);
+        Assert.AreEqual(150, result.M31, 0.001); // content left becomes (800-300)/2 = 250
+        Assert.AreEqual(250, content.X + result.M31, 0.001);
+    }
+
+    [TestMethod]
+    public void ApplyPan_IsNotScaledByCurrentZoom()
+    {
+        var current = ScaleAndTranslate(2, -40, -30);
+        var result = GestureTransformMath.ApplyPan(current, 10, 20);
+
+        // The pan delta is a screen-space delta and must pass through unchanged
+        Assert.AreEqual(-30, result.M31, 0.001);
+        Assert.AreEqual(-10, result.M32, 0.001);
+        Assert.AreEqual(2, result.M11, 0.001);
+    }
+
+    [TestMethod]
+    public void ApplyZoom_KeepsAnchorPointFixed()
+    {
+        // Content point (50,50) is displayed at screen (100,100) under 2x scale
+        var current = ScaleAndTranslate(2, 0, 0);
+        var anchor = new Point(100, 100);
+
+        var zoomed = GestureTransformMath.ApplyZoom(current, anchor, 1.5);
+
+        var anchorAfter = new Point(50, 50) * zoomed;
+        Assert.AreEqual(100, anchorAfter.X, 0.001);
+        Assert.AreEqual(100, anchorAfter.Y, 0.001);
+        Assert.AreEqual(3, zoomed.M11, 0.001);
+    }
+
+    [TestMethod]
+    public void ApplyZoom_ScalesOtherPointsAboutTheAnchor()
+    {
+        var current = ScaleAndTranslate(2, 0, 0);
+        var anchor = new Point(100, 100);
+
+        var zoomed = GestureTransformMath.ApplyZoom(current, anchor, 1.5);
+
+        // Screen (300,100) is 200px right of the anchor → 300px right after 1.5x
+        var pointAfter = new Point(150, 50) * zoomed;
+        Assert.AreEqual(400, pointAfter.X, 0.001);
+        Assert.AreEqual(100, pointAfter.Y, 0.001);
+    }
+
+    [TestMethod]
+    public void ApplyZoom_AndPan_ComposeInScreenSpace()
+    {
+        var current = ScaleAndTranslate(4, -100, -50);
+        var anchor = new Point(300, 200);
+
+        var result = GestureTransformMath.ApplyPan(
+            GestureTransformMath.ApplyZoom(current, anchor, 2), 25, -15);
+
+        var anchorAfter = new Point((300 + 100) / 4.0, (200 + 50) / 4.0) * result;
+        Assert.AreEqual(325, anchorAfter.X, 0.001);
+        Assert.AreEqual(185, anchorAfter.Y, 0.001);
+    }
 }
