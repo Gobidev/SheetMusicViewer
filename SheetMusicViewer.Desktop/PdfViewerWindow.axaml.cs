@@ -6,6 +6,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.Controls.Primitives;
+using Avalonia.VisualTree;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -1613,7 +1614,8 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         {
             NumPagesPerView = NumPagesPerView,
             DoubleTapTimeMs = userOptions.DoubleTapTimeThresholdMs,
-            DoubleTapDistancePx = userOptions.DoubleTapDistanceThreshold
+            DoubleTapDistancePx = userOptions.DoubleTapDistanceThreshold,
+            ContentBoundsProvider = GetPageContentBounds
         };
         
         _gestureHandler.NavigationRequested += (s, e) =>
@@ -1641,6 +1643,44 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             // will bubble up to the gesture handler.
             _gestureHandler.IsDisabled = false;
         }
+    }
+
+    /// <summary>
+    /// Returns the visible page content rectangle (union of the rendered page
+    /// canvases) in the coordinate space of the gesture target (_dpPage).
+    /// Pages are letterboxed inside the target, so this is smaller than the
+    /// viewport for e.g. portrait pages in a landscape window.
+    /// </summary>
+    private Rect GetPageContentBounds()
+    {
+        if (_dpPage == null) return default;
+
+        Rect? union = null;
+        foreach (var canvas in _dpPage.GetVisualDescendants().OfType<InkCanvasControl>())
+        {
+            var rect = GetBoundsRelativeTo(canvas, _dpPage);
+            if (rect.Width <= 0 || rect.Height <= 0) continue;
+            union = union is null ? rect : union.Value.Union(rect);
+        }
+
+        return union ?? default;
+    }
+
+    /// <summary>
+    /// Bounds of <paramref name="visual"/> expressed in <paramref name="ancestor"/>
+    /// coordinates. Only layout bounds are considered (no render transforms), which
+    /// is what the content provider needs: the render transform is on the ancestor.
+    /// </summary>
+    private static Rect GetBoundsRelativeTo(Visual visual, Visual ancestor)
+    {
+        var rect = visual.Bounds;
+        var current = visual.GetVisualParent();
+        while (current != null && current != ancestor)
+        {
+            rect = new Rect(rect.X + current.Bounds.X, rect.Y + current.Bounds.Y, rect.Width, rect.Height);
+            current = current.GetVisualParent();
+        }
+        return rect;
     }
     
     private void NavigateAsync(int delta)

@@ -13,7 +13,8 @@ namespace SheetMusicViewer.Desktop;
 /// - Pinch-to-zoom
 /// - Two-finger pan
 /// - Single-finger pan (when zoomed)
-/// - Touch navigation (tap left/right to navigate)
+/// - Touch navigation (tap left/right to navigate, only when fit-to-window)
+/// - Double-tap to reset the zoom while zoomed/panned
 /// - Double-tap detection
 /// 
 /// Avalonia doesn't have built-in ManipulationDelta events like WPF,
@@ -86,6 +87,13 @@ public class GestureHandler
     /// Minimum number of pages to navigate. Usually 1 or 2.
     /// </summary>
     public int NumPagesPerView { get; set; } = 2;
+
+    /// <summary>
+    /// Optional provider for the visible content rectangle in target coordinates
+    /// (e.g. the letterboxed page area inside the viewport). When null or empty,
+    /// the whole target is assumed to be content.
+    /// </summary>
+    public Func<Rect>? ContentBoundsProvider { get; set; }
 
     public GestureHandler(Control target, bool enableLogging = false)
     {
@@ -167,7 +175,6 @@ public class GestureHandler
             _gestureWasPerformed = false;
             _initialTransform = GetCurrentMatrix();
             Log("  -> 1 pointer - ready for tap or pan");
-            _lastTapLocation = pos;
         }
         else if (_activePointers.Count > 2)
         {
@@ -239,6 +246,11 @@ public class GestureHandler
                     Log("  -> Tap while transformed - no navigation");
                 }
             }
+            else if (isDoubleTap)
+            {
+                // Second tap of a double-tap while fit: don't turn two pages for one gesture
+                Log("  -> second tap of double-tap - no navigation");
+            }
             else
             {
                 // Fit-to-window: navigate immediately - page turns must stay instant.
@@ -287,10 +299,7 @@ public class GestureHandler
             var currentMatrix = GetCurrentMatrix();
             var scaleFactor = e.Delta.Y > 0 ? 1.1 : 0.9;
             
-            var newMatrix = Matrix.CreateTranslation(-pos.X, -pos.Y) *
-                           Matrix.CreateScale(scaleFactor, scaleFactor) *
-                           Matrix.CreateTranslation(pos.X, pos.Y) *
-                           currentMatrix;
+            var newMatrix = GestureTransformMath.ApplyZoom(currentMatrix, pos, scaleFactor);
             
             SetTransform(newMatrix);
             e.Handled = true;
@@ -339,12 +348,10 @@ public class GestureHandler
         var translateX = currentCenter.X - _initialCenter.X;
         var translateY = currentCenter.Y - _initialCenter.Y;
         
-        var newMatrix = Matrix.CreateTranslation(-_initialCenter.X, -_initialCenter.Y) *
-                       Matrix.CreateScale(scale, scale) *
-                       Matrix.CreateTranslation(_initialCenter.X, _initialCenter.Y) *
-                       Matrix.CreateTranslation(translateX, translateY) *
-                       _initialTransform;
-        
+        var newMatrix = GestureTransformMath.ApplyPan(
+            GestureTransformMath.ApplyZoom(_initialTransform, _initialCenter, scale),
+            translateX, translateY);
+
         SetTransform(newMatrix);
     }
 
@@ -356,8 +363,7 @@ public class GestureHandler
         if (Math.Abs(deltaX) > 0.5 || Math.Abs(deltaY) > 0.5)
         {
             var currentMatrix = GetCurrentMatrix();
-            var newMatrix = Matrix.CreateTranslation(deltaX, deltaY) * currentMatrix;
-            SetTransform(newMatrix);
+            SetTransform(GestureTransformMath.ApplyPan(currentMatrix, deltaX, deltaY));
             _lastDragPosition = currentPos;
         }
     }
@@ -396,7 +402,8 @@ public class GestureHandler
         var viewport = _target.Bounds.Size;
         if (viewport.Width <= 0 || viewport.Height <= 0) return matrix;
 
-        return GestureTransformMath.Clamp(matrix, viewport, MinScale, MaxScale);
+        var content = ContentBoundsProvider?.Invoke() ?? default;
+        return GestureTransformMath.Clamp(matrix, viewport, content, MinScale, MaxScale);
     }
 
     private void OnTargetPropertyChanged(object? sender, Avalonia.AvaloniaPropertyChangedEventArgs e)
