@@ -1653,7 +1653,16 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         Rect? union = null;
         foreach (var canvas in _dpPage.GetVisualDescendants().OfType<InkCanvasControl>())
         {
-            var rect = GetBoundsRelativeTo(canvas, _dpPage);
+            // Use the rendered page rect (not the control's layout bounds) so
+            // letterbox strips inside the control are not treated as content.
+            var canvasRect = GetBoundsRelativeTo(canvas, _dpPage);
+            var pageRect = canvas.PageContentBounds;
+            var rect = new Rect(
+                canvasRect.X + pageRect.X,
+                canvasRect.Y + pageRect.Y,
+                pageRect.Width,
+                pageRect.Height);
+
             if (rect.Width <= 0 || rect.Height <= 0) continue;
             union = union is null ? rect : union.Value.Union(rect);
         }
