@@ -71,9 +71,8 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     private Image? _imgThumb;
     private Menu? _mainMenu;
     // Responsive top-bar controls
-    private StackPanel? _pnlCenterControls;
     private TextBlock? _txtBoxTitle;
-    private TextBlock? _txtDesc0;
+    private bool _isCompactLayout;
     
     // Window-level ink toolbars (docked at window edges)
     private Border? _inkToolbarLeft;
@@ -190,9 +189,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         _mainMenu = this.GetControl<Menu>("mainMenu");
 
         // Responsive top-bar controls (shrunk/hidden on narrow screens so Chooser/Menu stay visible)
-        _pnlCenterControls = this.GetControl<StackPanel>("pnlCenterControls");
         _txtBoxTitle = this.GetControl<TextBlock>("txtBoxTitle");
-        _txtDesc0 = this.GetControl<TextBlock>("txtDesc0");
         SizeChanged += (s, e) => UpdateResponsiveLayout(e.NewSize.Width);
         
         // Get window-level ink toolbars and populate them
@@ -1943,22 +1940,20 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
 
     /// <summary>
     /// Adapts the top overlay to narrow screens (e.g. a tablet in portrait):
-    /// descriptions collapse first, then the page slider, so the Chooser button
+    /// the slider collapses first, then the descriptions, so the Chooser button
     /// and menu always stay reachable. The title is ellipsized rather than clipped.
     /// </summary>
     private void UpdateResponsiveLayout(double width)
     {
         if (width <= 0) return;
 
-        if (_pnlCenterControls != null)
+        if (_slider != null)
         {
-            _pnlCenterControls.IsVisible = width >= HideSliderWidth;
+            // Hide only the slider (the thumbnail/metadata button stays available)
+            _slider.IsVisible = width >= HideSliderWidth;
         }
 
-        if (_txtDesc0 != null)
-        {
-            _txtDesc0.IsVisible = width >= CompactLayoutWidth;
-        }
+        IsCompactLayout = width < CompactLayoutWidth;
 
         if (_txtBoxTitle != null)
         {
@@ -1966,6 +1961,27 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             _txtBoxTitle.MaxWidth = Math.Clamp(width * 0.28, 120, 420);
         }
     }
+
+    /// <summary>
+    /// True when the window is too narrow for the full top toolbar
+    /// (page descriptions collapse in this mode).
+    /// </summary>
+    public bool IsCompactLayout
+    {
+        get => _isCompactLayout;
+        private set
+        {
+            if (_isCompactLayout == value) return;
+            _isCompactLayout = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(Description0Visible));
+            OnPropertyChanged(nameof(Description1Visible));
+        }
+    }
+
+    public bool Description0Visible => !IsCompactLayout;
+
+    public bool Description1Visible => !IsCompactLayout && Show2Pages;
     
     private void BtnAbout_Click(object? sender, RoutedEventArgs e)
     {
@@ -2286,6 +2302,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             _show2Pages = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(NumPagesPerView));
+            OnPropertyChanged(nameof(Description1Visible));
             
             if (_gestureHandler != null)
             {
