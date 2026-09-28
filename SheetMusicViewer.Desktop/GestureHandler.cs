@@ -106,6 +106,11 @@ public class GestureHandler
         {
             _target.RenderTransform = new MatrixTransform(Matrix.Identity);
         }
+
+        // The clamp/zoom math below assumes a top-left transform origin.
+        // Avalonia defaults RenderTransformOrigin to Center, which shifts every
+        // transform by origin*(1-scale) and would defeat the clamping.
+        _target.RenderTransformOrigin = RelativePoint.TopLeft;
         
         // Wire up pointer events using AddHandler to properly see handled events
         // We need to check e.Handled ourselves since child controls (like InkCanvas) 
@@ -311,7 +316,10 @@ public class GestureHandler
     private void StartGesture()
     {
         if (_activePointers.Count != 2) return;
-        
+
+        // A multi-touch gesture must not be mistaken for a double-tap afterwards
+        _lastTapTimeMs = long.MinValue;
+
         var points = new List<Point>();
         foreach (var p in _activePointers.Values)
         {
