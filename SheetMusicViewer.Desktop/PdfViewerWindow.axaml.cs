@@ -72,7 +72,6 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     private CheckBox? _chkFav1;
     private Image? _imgThumb;
     private Menu? _mainMenu;
-    // Responsive top-bar controls
     private TextBlock? _txtBoxTitle;
     private bool _isCompactLayout;
     
@@ -100,7 +99,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     // Window state to restore when leaving full screen
     private WindowState _windowStateBeforeFullScreen = WindowState.Maximized;
 
-    // Current geometry to restore when leaving full screen (captured on entry)
+    // Pre-fullscreen geometry (captured on entry)
     private double _normalGeometryWidth;
     private double _normalGeometryHeight;
     private PixelPoint _normalGeometryPosition;
@@ -135,8 +134,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         
         Trace.WriteLine($"PdfViewerWindow constructor: WindowMaximized={settings.WindowMaximized} from {AppSettings.SettingsPath}");
         
-        // Apply window position/size from settings; negative coordinates are
-        // valid for monitors left/above the primary.
+        // Negative coordinates are valid for monitors left/above the primary.
         if (settings.WindowWidth > 0 && settings.WindowHeight > 0)
         {
             Width = settings.WindowWidth;
@@ -509,13 +507,26 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             WindowState == WindowState.Maximized ||
             (WindowState == WindowState.FullScreen && _windowStateBeforeFullScreen == WindowState.Maximized);
         
-        // Only save position/size if not maximized or full screen
-        if (WindowState is not (WindowState.Maximized or WindowState.FullScreen))
+        // Only save position/size if not maximized; when closing from full screen
+        // the geometry captured on entry is the user's window geometry
+        if (WindowState is not WindowState.Maximized)
         {
-            settings.WindowWidth = Width;
-            settings.WindowHeight = Height;
-            settings.WindowLeft = Position.X;
-            settings.WindowTop = Position.Y;
+            if (WindowState == WindowState.FullScreen
+                && _windowStateBeforeFullScreen == WindowState.Normal
+                && _hasNormalGeometry)
+            {
+                settings.WindowWidth = _normalGeometryWidth;
+                settings.WindowHeight = _normalGeometryHeight;
+                settings.WindowLeft = _normalGeometryPosition.X;
+                settings.WindowTop = _normalGeometryPosition.Y;
+            }
+            else
+            {
+                settings.WindowWidth = Width;
+                settings.WindowHeight = Height;
+                settings.WindowLeft = Position.X;
+                settings.WindowTop = Position.Y;
+            }
         }
         
         if (_currentPdfMetaData != null)
@@ -1888,7 +1899,6 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         await ShowPageAsync(CurrentPageNumber);
     }
 
-    // Re-renders the toolbar thumbnail after it was invalidated (e.g. after rotate)
     private async Task RefreshToolbarThumbnailAsync(PdfMetaDataReadResult pdfMetaData)
     {
         try
@@ -1930,6 +1940,10 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
                     _normalGeometryHeight = Height;
                     _normalGeometryPosition = Position;
                     _hasNormalGeometry = true;
+                }
+                else
+                {
+                    _hasNormalGeometry = false;
                 }
             }
             WindowState = WindowState.FullScreen;
@@ -1975,8 +1989,9 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         }
     }
 
-    // Keeps the saved/current window geometry on a connected screen (monitor
-    // removal, scaling change, rotation); validates the restore geometry too.
+    // Pulls the saved/current window geometry back onto a connected screen when
+    // it is (mostly) off-screen, e.g. after a monitor was removed or the scaling
+    // changed. Windows that are already visible are left alone.
     private void ClampWindowToVisibleScreen()
     {
         try
@@ -2002,7 +2017,18 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
 
             var windowRect = new PixelRect(x, y, ToPhysicalWidth(), ToPhysicalHeight());
 
-            // Pick the screen with the largest overlap; fall back to the primary screen
+            // Leave windows that are already (almost) fully visible alone, e.g. one
+            // deliberately spanning two monitors
+            long visibleArea = 0;
+            foreach (var candidate in screens.All)
+            {
+                var visible = candidate.WorkingArea.Intersect(windowRect);
+                if (visible.Width > 0 && visible.Height > 0)
+                    visibleArea += (long)visible.Width * visible.Height;
+            }
+            var windowArea = (long)windowRect.Width * windowRect.Height;
+            if (windowArea > 0 && visibleArea * 10 >= windowArea * 9) return;
+
             Screen? best = null;
             long bestArea = 0;
             foreach (var candidate in screens.All)
@@ -2056,8 +2082,6 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     private const double CompactLayoutWidth = 900;
     private const double HideSliderWidth = 760;
 
-    // Adapts the top overlay to narrow screens: descriptions and then the
-    // slider collapse so the Chooser button/menu stay reachable.
     private void UpdateResponsiveLayout(double width)
     {
         if (width <= 0) return;
@@ -2072,7 +2096,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
 
         if (_txtBoxTitle != null)
         {
-            // Keep the title proportional on wide screens, but never let it crowd out controls
+            // Cap the title width on very wide windows
             _txtBoxTitle.MaxWidth = Math.Clamp(width * 0.28, 120, 420);
         }
     }
@@ -2331,7 +2355,6 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             switch (e.Key)
             {
                 case Key.F11:
-                    // Standard full-screen toggle
                     if (_chkFullScreen != null)
                     {
                         _chkFullScreen.IsChecked = !(_chkFullScreen.IsChecked == true);
@@ -2529,8 +2552,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         }
     }
 
-    // The pending part is kept separate so its fixed slot in the toolbar does
-    // not change width while pages render (which would shift the whole bar).
+    // Separate so the fixed-width toolbar slot does not change size while pages render
     public string CachePendingStatus
     {
         get => _cachePendingStatus;

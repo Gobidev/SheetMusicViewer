@@ -12,7 +12,7 @@ public static class GestureTransformMath
     public const double DefaultMinScale = 1.0;
     public const double DefaultMaxScale = 8.0;
 
-    /// <summary>Clamps a scale factor, normalising invalid values to 1.</summary>
+    /// <summary>Clamps a scale factor to [minScale, maxScale], normalising invalid values to 1.</summary>
     public static double ClampScale(double scale, double minScale = DefaultMinScale, double maxScale = DefaultMaxScale)
     {
         if (minScale > maxScale)

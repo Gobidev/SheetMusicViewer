@@ -60,7 +60,7 @@
             </Grid.ColumnDefinitions>
             
             <!-- Left side controls -->
-            <StackPanel Orientation="Vertical" Grid.RowSpan="2" VerticalAlignment="Top" ClipToBounds="True" MinWidth="0">
+            <StackPanel Orientation="Vertical" Grid.RowSpan="2" VerticalAlignment="Top" ClipToBounds="True">
                 <StackPanel Orientation="Horizontal" Spacing="3">
                     <CheckBox Name="chkFav0" Content="Fav" Foreground="Lime" IsEnabled="{Binding PdfUIEnabled}" VerticalAlignment="Center" Margin="0,0,4,0"/>
                     <Button Name="btnLink0" Content="🔗" FontSize="12" Padding="4,0" MinWidth="28"
@@ -87,7 +87,7 @@
             </StackPanel>
             
             <!-- Center slider controls -->
-            <StackPanel Name="pnlCenterControls" Grid.Row="0" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Top">
+            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Top">
                 <Slider Name="slider" 
                         Value="{Binding CurrentPageNumber}" 
                         Maximum="{Binding MaxPageNumberMinus1}" 
@@ -121,7 +121,7 @@
                                TextTrimming="CharacterEllipsis"
                                VerticalAlignment="Center" 
                                Margin="0,0,3,0"/>
-                    <Panel Width="26" VerticalAlignment="Center" Margin="0,0,3,0">
+                    <Panel Width="26" VerticalAlignment="Center" Margin="0,0,3,0" ClipToBounds="True">
                         <TextBlock Text="{Binding CachePendingStatus}" 
                                    FontSize="10" 
                                    Foreground="Orange" 
@@ -129,7 +129,7 @@
                                    VerticalAlignment="Center"
                                    ToolTip.Tip="Pages still rendering"/>
                     </Panel>
-                    <Panel Width="52" VerticalAlignment="Center" Margin="0,0,3,0">
+                    <Panel Width="52" VerticalAlignment="Center" Margin="0,0,3,0" ClipToBounds="True">
                         <TextBlock Text="Loading..." 
                                    FontSize="10" 
                                    Foreground="{DynamicResource SystemControlForegroundAccentBrush}" 

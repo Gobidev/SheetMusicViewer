@@ -6,6 +6,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
@@ -176,9 +177,6 @@ public class ChooseMusicWindow : Window
             WindowStartupLocation = WindowStartupLocation.CenterOwner;
         }
 
-        // Note: WindowState is set in Opened event because setting it in constructor 
-        // doesn't work reliably in Avalonia
-
         BuildUI();
 
         SizeChanged += (s, e) => UpdateTopBarLayout(e.NewSize.Width);
@@ -245,7 +243,6 @@ public class ChooseMusicWindow : Window
 
     private const double NarrowTopBarWidth = 1100;
 
-    // Wraps a tab's content so its top padding can be adjusted
     private Control WrapTabContent(Control content)
     {
         var wrapper = new Border { Child = content };
@@ -261,7 +258,6 @@ public class ChooseMusicWindow : Window
 
         bool narrow = width > 0 && width < NarrowTopBarWidth;
 
-        // Row 0 always holds the tab strip
         Grid.SetRow(_tabControl, 0);
         Grid.SetRowSpan(_tabControl, 3);
         Grid.SetColumn(_tabControl, 0);
@@ -336,7 +332,9 @@ public class ChooseMusicWindow : Window
 
     private ItemsPresenter? GetTabHeaderPresenter()
     {
-        _tabHeaderPresenter ??= _tabControl.GetVisualDescendants().OfType<ItemsPresenter>().FirstOrDefault();
+        _tabHeaderPresenter ??= _tabControl.GetVisualDescendants()
+            .OfType<ItemsPresenter>()
+            .FirstOrDefault(p => p.TemplatedParent == _tabControl);
         return _tabHeaderPresenter;
     }
 
@@ -351,7 +349,6 @@ public class ChooseMusicWindow : Window
             {
                 var headerBottom = (header.TranslatePoint(default, _tabControl)?.Y ?? 0) + header.Bounds.Height;
 
-                // Bottom of the lowest overlay row
                 double rowBottom = 0;
                 foreach (var control in new Control[] { _folderGroup, _filterGroup, _buttonsGroup })
                 {
@@ -377,14 +374,11 @@ public class ChooseMusicWindow : Window
     // dialog: sizes to the working area directly and reveals once full-size.
     private void EnsureMaximized()
     {
-        // Best effort: ask the WM for the maximized state
         if (WindowState != WindowState.Maximized)
         {
             WindowState = WindowState.Maximized;
         }
 
-        // Size to the working area directly, so it is full-size even if the WM
-        // ignores the maximize request
         FitToWorkingArea();
 
         if (_maximizeRevealScheduled)
@@ -413,7 +407,6 @@ public class ChooseMusicWindow : Window
                 FitToWorkingArea();
             }
 
-            // Reveal once full-size (or after ~1s)
             if (IsFullSize() || attempts >= 20)
             {
                 _maximizeTimer.Stop();
@@ -424,18 +417,27 @@ public class ChooseMusicWindow : Window
         _maximizeTimer.Start();
     }
 
-    // Fills the owner screen's working area
+    // Owner can be disposed while the chooser is alive (PlatformImpl is nulled),
+    // and ScreenFromWindow throws for that
+    private Screen? GetTargetScreen()
+    {
+        var screens = Screens;
+        if (screens == null) return null;
+
+        if (Owner is { PlatformImpl: not null } owner
+            && screens.ScreenFromWindow(owner) is { } ownerScreen)
+        {
+            return ownerScreen;
+        }
+
+        return screens.ScreenFromWindow(this) ?? screens.Primary;
+    }
+
     private void FitToWorkingArea()
     {
         if (PlatformImpl == null) return;
 
-        var screens = Screens;
-        if (screens == null) return;
-
-        // Prefer the owner's screen so the chooser stays on the same monitor
-        var screen = (Owner != null ? screens.ScreenFromWindow(Owner) : null)
-                     ?? screens.ScreenFromWindow(this)
-                     ?? screens.Primary;
+        var screen = GetTargetScreen();
         if (screen == null) return;
 
         var area = screen.WorkingArea;
@@ -451,12 +453,7 @@ public class ChooseMusicWindow : Window
     {
         if (PlatformImpl == null) return true;
 
-        var screens = Screens;
-        if (screens == null) return true;
-
-        var screen = (Owner != null ? screens.ScreenFromWindow(Owner) : null)
-                     ?? screens.ScreenFromWindow(this)
-                     ?? screens.Primary;
+        var screen = GetTargetScreen();
         if (screen == null) return true;
 
         var scaling = screen.Scaling > 0 ? screen.Scaling : 1.0;
@@ -932,10 +929,9 @@ public class ChooseMusicWindow : Window
         var filterRow = new Grid();
         filterRow.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
         filterRow.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
-        filterRow.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
         Grid.SetColumn(filterPanel, 0);
         filterRow.Children.Add(filterPanel);
-        Grid.SetColumn(_tbxTotals, 2);
+        Grid.SetColumn(_tbxTotals, 1);
         filterRow.Children.Add(_tbxTotals);
 
         Grid.SetRow(filterRow, 0);
@@ -2732,9 +2728,6 @@ public class ChooseMusicWindow : Window
 
         var random = new Random(42);
         int index = 0;
-        int totalSongs = 0;
-        int totalPages = 0;
-        int totalFavs = 0;
 
         var sortedMetadata = GetSortedMetadata().ToList();
 
@@ -2744,10 +2737,6 @@ public class ChooseMusicWindow : Window
             var numSongs = pdfMetaData.TocEntries.Count;
             var numPages = pdfMetaData.VolumeInfoList.Sum(v => v.NPagesInThisVolume);
             var numFavs = pdfMetaData.Favorites.Count;
-
-            totalSongs += numSongs;
-            totalPages += numPages;
-            totalFavs += numFavs;
 
             var localIndex = index;
             var localBookName = bookName;
@@ -2783,7 +2772,7 @@ public class ChooseMusicWindow : Window
 
             if (index % 10 == 9)
             {
-                UpdateBooksDisplayDuringLoad(totalSongs, totalPages, totalFavs);
+                UpdateBooksDisplayDuringLoad();
                 await Task.Delay(10);
             }
 
@@ -2794,7 +2783,7 @@ public class ChooseMusicWindow : Window
         RefreshBooksDisplay();
     }
 
-    private void UpdateBooksDisplayDuringLoad(int totalSongs, int totalPages, int totalFavs)
+    private void UpdateBooksDisplayDuringLoad()
     {
         var filterText = _tbxFilter?.Text?.Trim() ?? string.Empty;
 
@@ -2815,7 +2804,6 @@ public class ChooseMusicWindow : Window
         UpdateTotalsText(displayItems);
     }
 
-    // Updates the totals shown at the right of the books toolbar
     private void UpdateTotalsText(IEnumerable<BookItemCache> items)
     {
         if (_tbxTotals == null) return;
@@ -2905,16 +2893,9 @@ public class ChooseMusicWindow : Window
         }
 
         var items = new List<Control>();
-        int totalSongs = 0;
-        int totalPages = 0;
-        int totalFavs = 0;
 
         foreach (var cacheItem in sortedItems)
         {
-            totalSongs += cacheItem.NumSongs;
-            totalPages += cacheItem.NumPages;
-            totalFavs += cacheItem.NumFavs;
-
             items.Add(CreateBookItemControl(cacheItem));
         }
 

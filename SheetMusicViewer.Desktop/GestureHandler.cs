@@ -238,7 +238,6 @@ public class GestureHandler
                 // accidental page turns); a double tap resets to fit-to-window.
                 if (isDoubleTap)
                 {
-                    _lastTapTimeMs = long.MinValue;
                     Log("  -> DOUBLE-TAP (reset to fit)");
                     DoubleTapped?.Invoke(this, pos);
                 }
@@ -250,7 +249,6 @@ public class GestureHandler
             else if (isDoubleTap)
             {
                 // Second tap of a double-tap while fit: don't turn two pages for one gesture
-                _lastTapTimeMs = long.MinValue;
                 Log("  -> second tap of double-tap - no navigation");
             }
             else
@@ -263,7 +261,7 @@ public class GestureHandler
         
         _activePointers.Remove(pointerId);
 
-        if (_activePointers.Count == 2 && !_isGesturing)
+        if (_activePointers.Count == 2)
         {
             // Dropped from 3+ fingers back to 2: restart with a fresh baseline
             StartGesture();
@@ -288,7 +286,12 @@ public class GestureHandler
         Log($"CAPTURE_LOST: id={pointerId}");
         _activePointers.Remove(pointerId);
         
-        if (_activePointers.Count < 2)
+        if (_activePointers.Count == 2)
+        {
+            // A shifting pair needs a fresh baseline too
+            StartGesture();
+        }
+        else if (_activePointers.Count < 2)
         {
             _isGesturing = false;
         }
@@ -308,6 +311,7 @@ public class GestureHandler
         
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
+            if (e.Delta.Y == 0) return;
             var pos = e.GetPosition(_target.Parent as Control ?? _target);
             var currentMatrix = GetCurrentMatrix();
             var scaleFactor = e.Delta.Y > 0 ? 1.1 : 0.9;
