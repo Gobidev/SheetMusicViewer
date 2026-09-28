@@ -68,6 +68,10 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     private CheckBox? _chkFav1;
     private Image? _imgThumb;
     private Menu? _mainMenu;
+    // Responsive top-bar controls
+    private StackPanel? _pnlCenterControls;
+    private TextBlock? _txtBoxTitle;
+    private TextBlock? _txtDesc0;
     
     // Window-level ink toolbars (docked at window edges)
     private Border? _inkToolbarLeft;
@@ -147,6 +151,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
                 WindowState = WindowState.Maximized;
                 Trace.WriteLine($"PdfViewerWindow Opened: Set WindowState to Maximized");
             }
+            UpdateResponsiveLayout(Bounds.Width);
         };
         
         // Save settings and cleanup on close
@@ -165,6 +170,12 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         _chkFav1 = this.GetControl<CheckBox>("chkFav1");
         _imgThumb = this.GetControl<Image>("ImgThumb");
         _mainMenu = this.GetControl<Menu>("mainMenu");
+
+        // Responsive top-bar controls (shrunk/hidden on narrow screens so Chooser/Menu stay visible)
+        _pnlCenterControls = this.GetControl<StackPanel>("pnlCenterControls");
+        _txtBoxTitle = this.GetControl<TextBlock>("txtBoxTitle");
+        _txtDesc0 = this.GetControl<TextBlock>("txtDesc0");
+        SizeChanged += (s, e) => UpdateResponsiveLayout(e.NewSize.Width);
         
         // Get window-level ink toolbars and populate them
         _inkToolbarLeft = this.GetControl<Border>("inkToolbarLeft");
@@ -1801,6 +1812,37 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             {
                 this.WindowState = WindowState.Normal;
             }
+        }
+    }
+
+    // On screens narrower than this, descriptions and then the slider collapse
+    // so that the Chooser button and menu always stay on-screen.
+    private const double CompactLayoutWidth = 900;
+    private const double HideSliderWidth = 760;
+
+    /// <summary>
+    /// Adapts the top overlay to narrow screens (e.g. a tablet in portrait):
+    /// descriptions collapse first, then the page slider, so the Chooser button
+    /// and menu always stay reachable. The title is ellipsized rather than clipped.
+    /// </summary>
+    private void UpdateResponsiveLayout(double width)
+    {
+        if (width <= 0) return;
+
+        if (_pnlCenterControls != null)
+        {
+            _pnlCenterControls.IsVisible = width >= HideSliderWidth;
+        }
+
+        if (_txtDesc0 != null)
+        {
+            _txtDesc0.IsVisible = width >= CompactLayoutWidth;
+        }
+
+        if (_txtBoxTitle != null)
+        {
+            // Keep the title proportional on wide screens, but never let it crowd out controls
+            _txtBoxTitle.MaxWidth = Math.Clamp(width * 0.28, 120, 420);
         }
     }
     
