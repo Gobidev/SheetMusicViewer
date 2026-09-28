@@ -6,6 +6,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.Controls.Primitives;
+using Avalonia.Platform;
 using Avalonia.VisualTree;
 using System;
 using System.Collections.Generic;
@@ -348,9 +349,6 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             Title = MyAppName;
             var settings = AppSettings.Instance;
             
-            // Apply full screen setting
-            ChkFullScreenToggled(_chkFullScreen?.IsChecked == true);
-            
             if (string.IsNullOrEmpty(_rootMusicFolder) || !Directory.Exists(_rootMusicFolder))
             {
                 // First time user - create and use sample data
@@ -498,7 +496,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         // Save settings
         var settings = AppSettings.Instance;
         settings.Show2Pages = Show2Pages;
-        settings.IsFullScreen = WindowState == WindowState.FullScreen || _chkFullScreen?.IsChecked == true;
+        settings.IsFullScreen = _chkFullScreen?.IsChecked == true;
         settings.WindowMaximized =
             WindowState == WindowState.Maximized ||
             (WindowState == WindowState.FullScreen && _windowStateBeforeFullScreen == WindowState.Maximized);
@@ -1860,6 +1858,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
 
         var volume = _currentPdfMetaData.VolumeInfoList[volNo];
         volume.Rotation = (volume.Rotation + 1) % 4;
+        _currentPdfMetaData.IsDirty = true;
 
         try
         {
@@ -1870,9 +1869,41 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             Logger.LogException("Rotate: failed to save metadata", ex);
         }
 
+        // The cached thumbnail is rendered with the volume's rotation
+        if (volNo == 0)
+        {
+            _currentPdfMetaData.ClearThumbnailCache();
+            _ = RefreshToolbarThumbnailAsync(_currentPdfMetaData);
+        }
+
         Trace.WriteLine($"Rotate: volume {volNo} rotation is now {volume.Rotation * 90} degrees");
         ClearCache();
         await ShowPageAsync(CurrentPageNumber);
+    }
+
+    /// <summary>
+    /// Re-renders the toolbar thumbnail after it has been invalidated
+    /// (e.g. after rotating the first volume).
+    /// </summary>
+    private async Task RefreshToolbarThumbnailAsync(PdfMetaDataReadResult pdfMetaData)
+    {
+        try
+        {
+            var thumbnail = await pdfMetaData.GetOrCreateThumbnailAsync(
+                () => GetThumbnailForMetadataAsync(pdfMetaData));
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (_currentPdfMetaData == pdfMetaData && thumbnail is Bitmap bmp && _imgThumb != null)
+                {
+                    _imgThumb.Source = bmp;
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning($"Thumbnail refresh after rotate failed: {ex.Message}");
+        }
     }
     
     private void ChkFullScreenToggled(bool isChecked)
@@ -1891,41 +1922,102 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         else
         {
             SystemDecorations = SystemDecorations.Full;
-            WindowState = _windowStateBeforeFullScreen == WindowState.Maximized
-                ? WindowState.Maximized
-                : WindowState.Normal;
+            if (_windowStateBeforeFullScreen == WindowState.Maximized)
+            {
+                WindowState = WindowState.Maximized;
+            }
+            else
+            {
+                WindowState = WindowState.Normal;
+
+                // Restore the saved normal geometry and keep it on-screen
+                var settings = AppSettings.Instance;
+                if (settings.WindowWidth > 0 && settings.WindowHeight > 0)
+                {
+                    Width = settings.WindowWidth;
+                    Height = settings.WindowHeight;
+                    Position = new PixelPoint((int)settings.WindowLeft, (int)settings.WindowTop);
+                }
+                ClampWindowToVisibleScreen();
+            }
         }
     }
 
     /// <summary>
-    /// Ensures the restored window geometry is visible on a currently connected screen.
-    /// Protects against saved positions from a monitor that has since been removed,
-    /// a display scaling change, or a tablet that was rotated/undocked elsewhere.
+    /// Ensures the geometry that will be used when the window is in Normal state is
+    /// visible on a currently connected screen. Handles a monitor being removed,
+    /// a display scaling change, or a tablet rotated/undocked since the settings
+    /// were saved. When the window is maximized/full screen the saved restore
+    /// geometry is validated instead (and written back to settings).
     /// </summary>
     private void ClampWindowToVisibleScreen()
     {
         try
         {
             var screens = Screens;
-            if (screens.ScreenCount == 0 || WindowState != WindowState.Normal) return;
+            if (screens.ScreenCount == 0) return;
 
-            var windowRect = new PixelRect(
-                Position.X, Position.Y,
-                Math.Max(1, (int)Width), Math.Max(1, (int)Height));
+            bool restoring = WindowState is WindowState.Maximized or WindowState.FullScreen;
+            var settings = AppSettings.Instance;
 
-            var screen = screens.All.FirstOrDefault(s => s.WorkingArea.Intersects(windowRect))
-                         ?? screens.Primary
-                         ?? screens.All[0];
+            var width  = restoring ? settings.WindowWidth  : Width;
+            var height = restoring ? settings.WindowHeight : Height;
+            var x      = restoring ? (int)settings.WindowLeft : Position.X;
+            var y      = restoring ? (int)settings.WindowTop  : Position.Y;
+
+            if (width <= 0 || height <= 0) return;
+
+            // Width/Height are logical (DIPs); WorkingArea/Position are physical pixels
+            var scaling = RenderScaling <= 0 ? 1.0 : RenderScaling;
+
+            int ToPhysicalWidth()  => Math.Max(1, (int)Math.Ceiling(width  * scaling));
+            int ToPhysicalHeight() => Math.Max(1, (int)Math.Ceiling(height * scaling));
+
+            var windowRect = new PixelRect(x, y, ToPhysicalWidth(), ToPhysicalHeight());
+
+            // Pick the screen with the largest overlap; fall back to the primary screen
+            Screen? best = null;
+            long bestArea = 0;
+            foreach (var candidate in screens.All)
+            {
+                var overlap = candidate.WorkingArea.Intersect(windowRect);
+                long overlapArea = (long)overlap.Width * overlap.Height;
+                if (overlapArea > bestArea)
+                {
+                    bestArea = overlapArea;
+                    best = candidate;
+                }
+            }
+
+            var screen = best ?? screens.Primary ?? screens.All[0];
             var area = screen.WorkingArea;
+            var screenScaling = screen.Scaling > 0 ? screen.Scaling : scaling;
 
-            Width  = Math.Min(Math.Max(Width,  1), area.Width);
-            Height = Math.Min(Math.Max(Height, 1), area.Height);
+            // Never larger than the target screen (logical units)
+            width  = Math.Min(width,  area.Width  / screenScaling);
+            height = Math.Min(height, area.Height / screenScaling);
 
-            var x = Math.Clamp(Position.X, area.X, Math.Max(area.X, area.X + area.Width  - (int)Width));
-            var y = Math.Clamp(Position.Y, area.Y, Math.Max(area.Y, area.Y + area.Height - (int)Height));
-            Position = new PixelPoint(x, y);
+            var pxWidth  = Math.Max(1, (int)Math.Ceiling(width  * screenScaling));
+            var pxHeight = Math.Max(1, (int)Math.Ceiling(height * screenScaling));
 
-            Trace.WriteLine($"ClampWindowToVisibleScreen: {Width}x{Height} at ({x},{y})");
+            x = Math.Clamp(x, area.X, Math.Max(area.X, area.X + area.Width  - pxWidth));
+            y = Math.Clamp(y, area.Y, Math.Max(area.Y, area.Y + area.Height - pxHeight));
+
+            if (restoring)
+            {
+                settings.WindowWidth  = width;
+                settings.WindowHeight = height;
+                settings.WindowLeft   = x;
+                settings.WindowTop    = y;
+            }
+            else
+            {
+                Width  = width;
+                Height = height;
+                Position = new PixelPoint(x, y);
+            }
+
+            Trace.WriteLine($"ClampWindowToVisibleScreen: {width}x{height} at ({x},{y}) scaling={screenScaling}");
         }
         catch (Exception ex)
         {
