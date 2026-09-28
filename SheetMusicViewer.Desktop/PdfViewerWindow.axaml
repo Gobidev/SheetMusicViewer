@@ -83,7 +83,7 @@
                                MaxWidth="320" TextTrimming="CharacterEllipsis"
                                Foreground="{DynamicResource SystemControlForegroundAccentBrush}" FontSize="14" VerticalAlignment="Center" Margin="5,0,0,0"/>
                 </StackPanel>
-                <TextBlock Name="txtDesc0" Text="{Binding Description0}" MaxWidth="500" TextTrimming="CharacterEllipsis" HorizontalAlignment="Left"/>
+                <TextBlock Name="txtDesc0" Text="{Binding Description0}" MaxWidth="500" TextTrimming="CharacterEllipsis" HorizontalAlignment="Left" IsVisible="{Binding Description0Visible}"/>
             </StackPanel>
             
             <!-- Center slider controls -->
@@ -92,8 +92,7 @@
                         Value="{Binding CurrentPageNumber}" 
                         Maximum="{Binding MaxPageNumberMinus1}" 
                         Minimum="1"
-                        MinWidth="90"
-                        MaxWidth="200"
+                        Width="200"
                         Height="40"
                         VerticalAlignment="Top"
                         IsEnabled="{Binding PdfUIEnabled}" 
@@ -161,7 +160,7 @@
                     <CheckBox Name="chkInk1" Content="Ink" IsEnabled="{Binding PdfUIEnabled}" ToolTip.Tip="Turn on/off inking with mouse or pen" IsVisible="{Binding Show2Pages}" Margin="0,0,4,0"/>
                     <CheckBox Name="chkFav1" Content="Fav" Foreground="Lime" IsEnabled="{Binding PdfUIEnabled}" Margin="0,0,3,0" IsVisible="{Binding Show2Pages}"/>
                 </StackPanel>
-                <TextBlock Name="txtDesc1" Text="{Binding Description1}" MaxWidth="400" TextTrimming="CharacterEllipsis" HorizontalAlignment="Right" Margin="0,0,3,0" IsVisible="{Binding Show2Pages}"/>
+                <TextBlock Name="txtDesc1" Text="{Binding Description1}" MaxWidth="400" TextTrimming="CharacterEllipsis" HorizontalAlignment="Right" Margin="0,0,3,0" IsVisible="{Binding Description1Visible}"/>
             </StackPanel>
         </Grid>
     </Grid>
