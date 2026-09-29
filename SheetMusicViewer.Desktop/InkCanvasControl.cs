@@ -417,10 +417,18 @@ public class InkCanvasControl : Panel
                 Cursor = HiddenCursor;
             }
         }
-        else if (pointerType == PointerType.Mouse && ReferenceEquals(Cursor, HiddenCursor))
+        else if (pointerType == PointerType.Mouse && ReferenceEquals(Cursor, HiddenCursor) && !IsPenActive())
         {
             Cursor = null;
         }
+    }
+
+    /// <summary>
+    /// True while a pen is drawing or was used in the last few hundred milliseconds
+    /// </summary>
+    private bool IsPenActive()
+    {
+        return WithinWindow(_lastPenPointerTicks, PenDuplicateGuardMs) || (_isDrawing && !_currentStrokeFromTouch);
     }
 
     /// <summary>
@@ -729,7 +737,16 @@ public class InkCanvasControl : Panel
             return;
         }
         
-        if (_drawingPointer == null || e.Pointer.Id != _drawingPointer.Id) return;
+        if (_drawingPointer == null || e.Pointer.Id != _drawingPointer.Id)
+        {
+            // A duplicated pen mouse event or a suppressed touch must not complete a tap
+            if ((e.Pointer.Type == PointerType.Mouse && IsPenActive()) ||
+                (e.Pointer.Type == PointerType.Touch && IsTouchSuppressedByPen()))
+            {
+                e.Handled = true;
+            }
+            return;
+        }
         
         Trace.WriteLine($"[InkCanvas] Page {_pageNo}: OnPointerReleased");
         
@@ -770,6 +787,12 @@ public class InkCanvasControl : Panel
     
     private void OnPointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
     {
+        // Ignore capture loss from a pointer we are not tracking
+        if (_drawingPointer != null && e.Pointer.Id != _drawingPointer.Id)
+        {
+            return;
+        }
+
         // If we lose capture while drawing, finalize the stroke
         if (_isDrawing && _currentNormalizedStroke != null)
         {
