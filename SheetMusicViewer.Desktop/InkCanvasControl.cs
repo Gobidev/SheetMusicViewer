@@ -38,10 +38,8 @@ public class InkCanvasControl : Panel
     private bool _currentStrokeFromTouch; // True while the active stroke came from a finger
     private bool _isErasingStroke; // True while the active stroke is an erase gesture (toolbar eraser or pen eraser)
 
-    // Stylus support: while a pen (or mouse) produced events recently, touch input is ignored so a
-    // hand resting on the screen doesn't leave stray strokes. The timestamps are static so both
-    // pages of a two-page view share the pen activity, and they use monotonic ticks so system clock
-    // changes can't skew the windows.
+    // Recent pen or mouse activity suppresses touch input so a resting hand doesn't draw.
+    // Static so both pages share it, and monotonic so clock changes can't skew it.
     private const long NonTouchSuppressionMs = 600;
     private const long PenDuplicateGuardMs = 400;
     private static long _lastNonTouchPointerTicks = long.MinValue;
@@ -157,8 +155,7 @@ public class InkCanvasControl : Panel
         {
             Source = backgroundImage,
             Stretch = Stretch.Uniform,
-            // Always hit test visible so the pen can draw without the Ink toggle;
-            // the pointer handlers decide what actually inks
+            // Always hit test visible so the pen can draw without the Ink toggle
             IsHitTestVisible = true
         };
         Children.Add(_bgImage);
@@ -385,9 +382,6 @@ public class InkCanvasControl : Panel
         );
     }
 
-    /// <summary>
-    /// True while a pen or mouse was active recently, so touch input is treated as palm/finger noise
-    /// </summary>
     private bool IsTouchSuppressedByPen()
     {
         if (_isDrawing && !_currentStrokeFromTouch)
@@ -397,17 +391,11 @@ public class InkCanvasControl : Panel
         return WithinWindow(_lastNonTouchPointerTicks, NonTouchSuppressionMs);
     }
 
-    /// <summary>
-    /// True when a monotonic timestamp is set and recent enough to be within the given window
-    /// </summary>
     private static bool WithinWindow(long lastTicks, long windowMs)
     {
         return lastTicks != long.MinValue && Environment.TickCount64 - lastTicks < windowMs;
     }
 
-    /// <summary>
-    /// Hides the pointer cursor while a pen is in use, and restores it when a mouse is used
-    /// </summary>
     private void UpdateCursorForPointerType(PointerType pointerType)
     {
         if (pointerType == PointerType.Pen)
@@ -423,17 +411,11 @@ public class InkCanvasControl : Panel
         }
     }
 
-    /// <summary>
-    /// True while a pen is drawing or was used in the last few hundred milliseconds
-    /// </summary>
     private bool IsPenActive()
     {
         return WithinWindow(_lastPenPointerTicks, PenDuplicateGuardMs) || (_isDrawing && !_currentStrokeFromTouch);
     }
 
-    /// <summary>
-    /// Discards the stroke currently being drawn, for example when the pen takes over from a finger
-    /// </summary>
     private void CancelCurrentStroke()
     {
         // Clear the drawing state first: releasing capture raises PointerCaptureLost synchronously,
@@ -658,8 +640,7 @@ public class InkCanvasControl : Panel
     {
         UpdateCursorForPointerType(e.Pointer.Type);
 
-        // Pen hover counts as activity so a hand resting on the screen can't draw. The pen duplicate
-        // guard only tracks presses, so a hovering pen doesn't swallow mouse clicks.
+        // Pen hover counts as activity so a resting hand can't draw; duplicate guard is press-only
         if (e.Pointer.Type != PointerType.Touch)
         {
             _lastNonTouchPointerTicks = Environment.TickCount64;
@@ -724,8 +705,7 @@ public class InkCanvasControl : Panel
 
     private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        // Keep consuming suppressed touches and duplicated pen mouse events so they can't reach
-        // the page turn and zoom handlers
+        // Keep suppressed touches and duplicated pen events away from the gesture handlers
         if (!_isDrawing)
         {
             var strayTouch = e.Pointer.Type == PointerType.Touch && IsTouchSuppressedByPen();
