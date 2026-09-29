@@ -35,6 +35,18 @@ public class InkCanvasControl : Panel
     private Points? _currentPolylinePoints;
     private bool _isDrawing;
     private IPointer? _drawingPointer; // Track which pointer is drawing
+    private bool _currentStrokeFromTouch; // True while the active stroke came from a finger
+    private bool _isErasingStroke; // True while the active stroke is an erase gesture (toolbar eraser or pen eraser)
+
+    // Stylus support: while a pen (or mouse) produced events recently, touch input is ignored so a
+    // hand resting on the screen doesn't leave stray strokes.
+    private static readonly TimeSpan NonTouchSuppressionWindow = TimeSpan.FromMilliseconds(600);
+    private static readonly TimeSpan PenDuplicateGuardWindow = TimeSpan.FromMilliseconds(400);
+    private DateTime _lastNonTouchPointerUtc = DateTime.MinValue;
+    private DateTime _lastPenPointerUtc = DateTime.MinValue;
+    private static bool _loggedPenDetection;
+    private static bool _loggedEraserDetection;
+    private static bool _loggedTouchSuppression;
     private IBrush _currentBrush = Brushes.Black;
     private double _strokeThickness = 2.0;
     private readonly Bitmap _backgroundImage;
@@ -80,7 +92,6 @@ public class InkCanvasControl : Panel
             {
                 _isInkingEnabled = value;
                 Trace.WriteLine($"[InkCanvas] Page {_pageNo}: IsInkingEnabled changed to {value}");
-                UpdateInkingEventHandlers();
             }
         }
     }
@@ -143,13 +154,20 @@ public class InkCanvasControl : Panel
         {
             Source = backgroundImage,
             Stretch = Stretch.Uniform,
-            IsHitTestVisible = false // Initially not inking, so allow events to pass through
+            // Always hit test visible so the pen can draw without the Ink toggle;
+            // the pointer handlers decide what actually inks
+            IsHitTestVisible = true
         };
         Children.Add(_bgImage);
-        
-        // Note: Pointer event handlers are attached/detached in UpdateInkingEventHandlers()
-        // based on IsInkingEnabled state
-        
+
+        _bgImage.PointerPressed += OnPointerPressed;
+        _bgImage.PointerMoved += OnPointerMoved;
+        _bgImage.PointerReleased += OnPointerReleased;
+        _bgImage.PointerCaptureLost += OnPointerCaptureLost;
+
+        // No pointer cursor over the page while writing with a pen
+        Cursor = new Cursor(StandardCursorType.None);
+
         Trace.WriteLine($"[InkCanvas] Created for page {pageNo}, hasInkData={inkStrokeClass != null}");
     }
 
@@ -197,28 +215,6 @@ public class InkCanvasControl : Panel
     /// When inking is disabled, we don't want to capture any pointer events
     /// so they can pass through to the parent for navigation.
     /// </summary>
-    private void UpdateInkingEventHandlers()
-    {
-        if (_isInkingEnabled)
-        {
-            // Enable hit testing and attach event handlers
-            _bgImage.IsHitTestVisible = true;
-            _bgImage.PointerPressed += OnPointerPressed;
-            _bgImage.PointerMoved += OnPointerMoved;
-            _bgImage.PointerReleased += OnPointerReleased;
-            _bgImage.PointerCaptureLost += OnPointerCaptureLost;
-        }
-        else
-        {
-            // Disable hit testing and detach event handlers
-            _bgImage.IsHitTestVisible = false;
-            _bgImage.PointerPressed -= OnPointerPressed;
-            _bgImage.PointerMoved -= OnPointerMoved;
-            _bgImage.PointerReleased -= OnPointerReleased;
-            _bgImage.PointerCaptureLost -= OnPointerCaptureLost;
-        }
-    }
-    
     /// <summary>
     /// Load ink strokes from the InkStrokeClass data
     /// </summary>
@@ -389,30 +385,131 @@ public class InkCanvasControl : Panel
         );
     }
 
+    /// <summary>
+    /// True while a pen or mouse was active recently, so touch input is treated as palm/finger noise
+    /// </summary>
+    private bool IsTouchSuppressedByPen()
+    {
+        if (_isDrawing && !_currentStrokeFromTouch)
+        {
+            return true;
+        }
+        return DateTime.UtcNow - _lastNonTouchPointerUtc < NonTouchSuppressionWindow;
+    }
+
+    /// <summary>
+    /// Discards the stroke currently being drawn, for example when the pen takes over from a finger
+    /// </summary>
+    private void CancelCurrentStroke()
+    {
+        if (_currentPolyline != null)
+        {
+            Children.Remove(_currentPolyline);
+            _currentPolyline = null;
+        }
+        if (_currentRectangle != null)
+        {
+            Children.Remove(_currentRectangle);
+            _currentRectangle = null;
+        }
+        if (_currentEllipse != null)
+        {
+            Children.Remove(_currentEllipse);
+            _currentEllipse = null;
+        }
+        if (_drawingPointer != null)
+        {
+            _drawingPointer.Capture(null);
+            _drawingPointer = null;
+        }
+
+        _currentNormalizedStroke = null;
+        _currentStrokeMetadata = null;
+        _isDrawing = false;
+        _isErasingStroke = false;
+        _currentStrokeFromTouch = false;
+        Trace.WriteLine($"[InkCanvas] Page {_pageNo}: Cancelled in-progress stroke");
+    }
+
     private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        Trace.WriteLine($"[InkCanvas] Page {_pageNo}: OnPointerPressed - IsInkingEnabled={IsInkingEnabled}");
-        
-        if (!IsInkingEnabled) return;
-        
         var properties = e.GetCurrentPoint(_bgImage).Properties;
-        
-        Trace.WriteLine($"[InkCanvas] Page {_pageNo}: PointerPressed for drawing - Mode={_currentMode}, IsEraser={properties.IsEraser}, IsLeft={properties.IsLeftButtonPressed}");
-        
-        // Check for pen eraser
-        if (properties.IsEraser)
+        var pointerType = e.Pointer.Type;
+        var isTouch = pointerType == PointerType.Touch;
+        var isPen = pointerType == PointerType.Pen;
+
+        if (!isTouch)
         {
-            _currentMode = InkMode.Eraser;
+            _lastNonTouchPointerUtc = DateTime.UtcNow;
+            if (isPen)
+            {
+                _lastPenPointerUtc = DateTime.UtcNow;
+            }
+            if (!_loggedPenDetection && isPen)
+            {
+                _loggedPenDetection = true;
+                Logger.LogInfo($"Ink: pen pointer detected on page {_pageNo}");
+            }
         }
-        
-        // Handle eraser mode - erase strokes that are touched
-        if (_currentMode == InkMode.Eraser)
+
+        // Some XWayland setups also emit a mouse event for the pen; ignore those duplicates
+        if (pointerType == PointerType.Mouse && DateTime.UtcNow - _lastPenPointerUtc < PenDuplicateGuardWindow)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (isTouch && IsTouchSuppressedByPen())
+        {
+            // A finger or palm touching the screen while the pen is in use must not draw or navigate
+            if (!_loggedTouchSuppression)
+            {
+                _loggedTouchSuppression = true;
+                Logger.LogInfo($"Ink: touch suppressed while pen is in use on page {_pageNo}");
+            }
+            e.Handled = true;
+            return;
+        }
+
+        // The pen always draws; mouse and touch drawing follow the Ink toggle. Events we don't
+        // handle bubble to the gesture handler for navigation and zoom.
+        if (!isPen && !IsInkingEnabled)
+        {
+            return;
+        }
+
+        Trace.WriteLine($"[InkCanvas] Page {_pageNo}: OnPointerPressed type={pointerType} - Mode={_currentMode}, IsEraser={properties.IsEraser}, IsLeft={properties.IsLeftButtonPressed}");
+
+        // A pen going down takes over from an in-progress finger stroke
+        if (!isTouch && _isDrawing && _currentStrokeFromTouch)
+        {
+            CancelCurrentStroke();
+        }
+
+        // Only one pointer draws at a time
+        if (_isDrawing)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        // The pen eraser erases for this stroke without changing the selected tool
+        _isErasingStroke = properties.IsEraser || _currentMode == InkMode.Eraser;
+        if (properties.IsEraser && !_loggedEraserDetection)
+        {
+            _loggedEraserDetection = true;
+            Logger.LogInfo($"Ink: pen eraser detected on page {_pageNo}");
+        }
+
+        // Handle eraser - erase strokes that are touched
+        if (_isErasingStroke)
         {
             var point = e.GetPosition(this);
             TryEraseStrokeAt(point);
             e.Pointer.Capture(_bgImage);
             _isDrawing = true;
             _drawingPointer = e.Pointer;
+            _currentStrokeFromTouch = isTouch;
             e.Handled = true;
             return;
         }
@@ -451,6 +548,7 @@ public class InkCanvasControl : Panel
             
             _isDrawing = true;
             _drawingPointer = e.Pointer;
+            _currentStrokeFromTouch = isTouch;
             e.Pointer.Capture(_bgImage);
             e.Handled = true;
             
@@ -480,6 +578,7 @@ public class InkCanvasControl : Panel
             
             _isDrawing = true;
             _drawingPointer = e.Pointer;
+            _currentStrokeFromTouch = isTouch;
             e.Pointer.Capture(_bgImage);
             e.Handled = true;
             
@@ -512,20 +611,29 @@ public class InkCanvasControl : Panel
         Children.Add(_currentPolyline);
         _isDrawing = true;
         _drawingPointer = e.Pointer;
+        _currentStrokeFromTouch = isTouch;
         e.Pointer.Capture(_bgImage);
         e.Handled = true;
     }
 
     private void OnPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (!IsInkingEnabled || !_isDrawing) return;
+        // Pen hover counts as activity so a hand resting on the screen can't draw
+        if (e.Pointer.Type != PointerType.Touch)
+        {
+            _lastNonTouchPointerUtc = DateTime.UtcNow;
+            if (e.Pointer.Type == PointerType.Pen)
+            {
+                _lastPenPointerUtc = DateTime.UtcNow;
+            }
+        }
+
+        if (!_isDrawing) return;
         
         if (_drawingPointer == null || e.Pointer.Id != _drawingPointer.Id) return;
         
-        var properties = e.GetCurrentPoint(_bgImage).Properties;
-        
-        // Handle eraser mode during drag
-        if (_currentMode == InkMode.Eraser || properties.IsEraser)
+        // Handle eraser during drag (toolbar eraser or pen eraser for this stroke)
+        if (_isErasingStroke)
         {
             var point = e.GetPosition(this);
             TryEraseStrokeAt(point);
@@ -579,18 +687,27 @@ public class InkCanvasControl : Panel
 
     private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        if (!IsInkingEnabled || !_isDrawing) return;
+        // Keep consuming a suppressed touch so it doesn't reach the page turn and zoom handlers
+        if (!_isDrawing)
+        {
+            if (e.Pointer.Type == PointerType.Touch && IsTouchSuppressedByPen())
+            {
+                e.Handled = true;
+            }
+            return;
+        }
         
         if (_drawingPointer == null || e.Pointer.Id != _drawingPointer.Id) return;
         
         Trace.WriteLine($"[InkCanvas] Page {_pageNo}: OnPointerReleased");
         
-        // Check if pen eraser was released
-        var properties = e.GetCurrentPoint(_bgImage).Properties;
-        if (properties.IsEraser || _currentMode == InkMode.Eraser)
+        // Pen eraser (or the toolbar eraser) ends the erase stroke
+        if (_isErasingStroke)
         {
             _isDrawing = false;
             _drawingPointer = null;
+            _isErasingStroke = false;
+            _currentStrokeFromTouch = false;
             e.Pointer.Capture(null);
             e.Handled = true;
             return;
@@ -641,6 +758,9 @@ public class InkCanvasControl : Panel
             Trace.WriteLine($"[InkCanvas] Page {_pageNo}: PointerCaptureLost while drawing ellipse");
             FinalizeCurrentEllipse(new Point(_ellipseStartPoint.X, _ellipseStartPoint.Y));
         }
+        
+        _isErasingStroke = false;
+        _currentStrokeFromTouch = false;
     }
     
     /// <summary>
@@ -682,6 +802,8 @@ public class InkCanvasControl : Panel
         _currentPolylinePoints = null;
         _isDrawing = false;
         _drawingPointer = null;
+        _isErasingStroke = false;
+        _currentStrokeFromTouch = false;
     }
     
     /// <summary>
@@ -693,6 +815,8 @@ public class InkCanvasControl : Panel
         {
             _isDrawing = false;
             _drawingPointer = null;
+            _isErasingStroke = false;
+            _currentStrokeFromTouch = false;
             return;
         }
         
@@ -745,6 +869,8 @@ public class InkCanvasControl : Panel
         _currentStrokeMetadata = null;
         _isDrawing = false;
         _drawingPointer = null;
+        _isErasingStroke = false;
+        _currentStrokeFromTouch = false;
         
         // Re-render to show the new rectangle as a polyline
         RerenderStrokes();
@@ -759,6 +885,8 @@ public class InkCanvasControl : Panel
         {
             _isDrawing = false;
             _drawingPointer = null;
+            _isErasingStroke = false;
+            _currentStrokeFromTouch = false;
             return;
         }
         
@@ -816,6 +944,8 @@ public class InkCanvasControl : Panel
         _currentStrokeMetadata = null;
         _isDrawing = false;
         _drawingPointer = null;
+        _isErasingStroke = false;
+        _currentStrokeFromTouch = false;
         
         // Re-render to show the new ellipse as a polyline
         RerenderStrokes();
