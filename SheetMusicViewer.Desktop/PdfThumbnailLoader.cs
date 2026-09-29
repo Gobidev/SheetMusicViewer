@@ -89,16 +89,32 @@ internal static class PdfThumbnailLoader
 
     private static void TryWriteCache(string cachePath, byte[] bytes)
     {
+        string? tempPath = null;
         try
         {
             Directory.CreateDirectory(CacheFolder);
-            var tempPath = cachePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            tempPath = cachePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             File.WriteAllBytes(tempPath, bytes);
             File.Move(tempPath, cachePath, overwrite: true);
+            tempPath = null;
         }
         catch
         {
             // The disk cache is best effort
+        }
+        finally
+        {
+            if (tempPath != null)
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                    // Ignore temp files that cannot be removed
+                }
+            }
         }
     }
 

@@ -85,6 +85,9 @@ public class ChooseMusicWindow : Window
     // Realized item controls; the ListBox binds to this so items can be appended without a full rebuild
     private readonly ObservableCollection<Control> _bookControls = new();
     private Avalonia.Threading.DispatcherTimer? _filterDebounceTimer;
+    private Avalonia.Threading.DispatcherTimer? _favoritesRefreshTimer;
+    private string? _booksRenderedFilter;
+    private int _booksRenderedUpTo;
     private bool _isLoading = false;
 
     // Favorites data source
@@ -2751,6 +2754,8 @@ public class ChooseMusicWindow : Window
         _isLoading = true;
         _bookItemCache.Clear();
         _bookControls.Clear();
+        _booksRenderedFilter = null;
+        _booksRenderedUpTo = 0;
 
         int index = 0;
 
@@ -2785,11 +2790,7 @@ public class ChooseMusicWindow : Window
         }
 
         _isLoading = false;
-        // The incremental updates already rendered everything unless a filter was typed
-        if (!string.IsNullOrEmpty(_tbxFilter?.Text?.Trim()) || _bookControls.Count == 0)
-        {
-            RefreshBooksDisplay();
-        }
+        RefreshBooksDisplay();
     }
 
     private SemaphoreSlim ThumbnailLoadGate =>
@@ -2800,9 +2801,11 @@ public class ChooseMusicWindow : Window
     /// </summary>
     private void StartThumbnailLoad(PdfMetaDataReadResult pdfMetaData, BookItemCache cacheItem, int index, string bookName)
     {
+        // Capture the gate on the UI thread so every task waits on the same instance
+        var gate = ThumbnailLoadGate;
         _ = Task.Run(async () =>
         {
-            await ThumbnailLoadGate.WaitAsync();
+            await gate.WaitAsync();
             try
             {
                 var bitmap = await pdfMetaData.GetOrCreateThumbnailAsync(async () =>
@@ -2824,45 +2827,93 @@ public class ChooseMusicWindow : Window
                     {
                         cacheItem.ImageControl.Source = bitmap;
                     }
+
+                    ScheduleFavoritesRefresh();
                 });
             }
             catch (Exception ex)
             {
                 Logger.LogWarning($"Failed to get PDF thumbnail for {bookName}: {ex.Message}");
+                try
+                {
+                    var fallback = GenerateBookCoverBitmap(ThumbnailWidth, ThumbnailHeight, new Random(42 + index), bookName, index);
+                    pdfMetaData.ThumbnailCache = fallback;
+                    await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (cacheItem.ImageControl != null)
+                        {
+                            cacheItem.ImageControl.Source = fallback;
+                        }
+                    });
+                }
+                catch (Exception fallbackEx)
+                {
+                    Logger.LogWarning($"Failed to generate a fallback cover for {bookName}: {fallbackEx.Message}");
+                }
             }
             finally
             {
-                ThumbnailLoadGate.Release();
+                gate.Release();
             }
         });
+    }
+
+    private void ScheduleFavoritesRefresh()
+    {
+        if (_favoritesBrowseControl == null)
+        {
+            return;
+        }
+
+        _favoritesRefreshTimer ??= new Avalonia.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(300)
+        };
+        _favoritesRefreshTimer.Stop();
+        _favoritesRefreshTimer.Tick -= FavoritesRefreshTimer_Tick;
+        _favoritesRefreshTimer.Tick += FavoritesRefreshTimer_Tick;
+        _favoritesRefreshTimer.Start();
+    }
+
+    private void FavoritesRefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        _favoritesRefreshTimer?.Stop();
+        if (_favoritesBrowseControl != null)
+        {
+            FillFavoritesTab();
+        }
     }
 
     private void UpdateBooksDisplayDuringLoad()
     {
         var filterText = _tbxFilter?.Text?.Trim() ?? string.Empty;
 
-        IEnumerable<BookItemCache> displayItems = _bookItemCache;
-        if (!string.IsNullOrEmpty(filterText))
+        if (!string.Equals(filterText, _booksRenderedFilter, StringComparison.Ordinal))
         {
-            displayItems = displayItems.Where(item =>
-                item.BookName.Contains(filterText, StringComparison.OrdinalIgnoreCase));
-
-            // A filter is active: rebuild only the matching items
+            // The filter changed while loading: rebuild the list once for the new filter
             _bookControls.Clear();
-            foreach (var cacheItem in displayItems)
+            _booksRenderedFilter = filterText;
+            _booksRenderedUpTo = 0;
+        }
+
+        // The sort order is fixed while loading, so append only what has not been added yet
+        for (int i = _booksRenderedUpTo; i < _bookItemCache.Count; i++)
+        {
+            var cacheItem = _bookItemCache[i];
+            if (filterText.Length == 0 ||
+                cacheItem.BookName.Contains(filterText, StringComparison.OrdinalIgnoreCase))
             {
                 _bookControls.Add(CreateBookItemControl(cacheItem));
             }
         }
-        else
-        {
-            // The sort order is fixed while loading, so append what is new instead of rebuilding
-            for (int i = _bookControls.Count; i < _bookItemCache.Count; i++)
-            {
-                _bookControls.Add(CreateBookItemControl(_bookItemCache[i]));
-            }
-        }
+        _booksRenderedUpTo = _bookItemCache.Count;
 
+        IEnumerable<BookItemCache> displayItems = _bookItemCache;
+        if (filterText.Length > 0)
+        {
+            displayItems = displayItems.Where(item =>
+                item.BookName.Contains(filterText, StringComparison.OrdinalIgnoreCase));
+        }
         UpdateTotalsText(displayItems);
     }
 
@@ -2956,6 +3007,8 @@ public class ChooseMusicWindow : Window
         }
 
         _bookControls.Clear();
+        _booksRenderedFilter = filterText;
+        _booksRenderedUpTo = _bookItemCache.Count;
 
         foreach (var cacheItem in sortedItems)
         {
