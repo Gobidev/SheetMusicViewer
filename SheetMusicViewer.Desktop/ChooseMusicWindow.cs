@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SheetMusicViewer.Desktop;
@@ -101,6 +102,9 @@ public class ChooseMusicWindow : Window
     private const int ThumbnailHeight = 225;
     private const string NewFolderDialogString = "New...";
 
+    // Bounds how many covers are rendered at the same time
+    private SemaphoreSlim? _thumbnailLoadGate;
+
     /// <summary>
     /// If true, skip cloud-only files instead of triggering download.
     /// </summary>
@@ -133,6 +137,7 @@ public class ChooseMusicWindow : Window
         public int NumSongs { get; set; }
         public int NumPages { get; set; }
         public int NumFavs { get; set; }
+        public Image? ImageControl { get; set; }
         public Bitmap? Bitmap => Metadata?.GetCachedThumbnail<Bitmap>();
     }
 
@@ -2726,7 +2731,6 @@ public class ChooseMusicWindow : Window
         _isLoading = true;
         _bookItemCache.Clear();
 
-        var random = new Random(42);
         int index = 0;
 
         var sortedMetadata = GetSortedMetadata().ToList();
@@ -2738,37 +2742,17 @@ public class ChooseMusicWindow : Window
             var numPages = pdfMetaData.VolumeInfoList.Sum(v => v.NPagesInThisVolume);
             var numFavs = pdfMetaData.Favorites.Count;
 
-            var localIndex = index;
-            var localBookName = bookName;
-            try
-            {
-                await pdfMetaData.GetOrCreateThumbnailAsync(async () =>
-                {
-                    try
-                    {
-                        return await GetPdfThumbnailAsync(pdfMetaData);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.LogWarning($"Failed to get PDF thumbnail for {localBookName}: {ex.Message}");
-                        return GenerateBookCoverBitmap(ThumbnailWidth, ThumbnailHeight, random, localBookName, localIndex);
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                Logger.LogWarning($"Failed to get PDF thumbnail for {bookName}: {ex.Message}");
-                pdfMetaData.ThumbnailCache = GenerateBookCoverBitmap(ThumbnailWidth, ThumbnailHeight, random, bookName, index);
-            }
-
-            _bookItemCache.Add(new BookItemCache
+            var cacheItem = new BookItemCache
             {
                 Metadata = pdfMetaData,
                 BookName = bookName,
                 NumSongs = numSongs,
                 NumPages = numPages,
                 NumFavs = numFavs
-            });
+            };
+            _bookItemCache.Add(cacheItem);
+
+            StartThumbnailLoad(pdfMetaData, cacheItem, index, bookName);
 
             if (index % 10 == 9)
             {
@@ -2781,6 +2765,51 @@ public class ChooseMusicWindow : Window
 
         _isLoading = false;
         RefreshBooksDisplay();
+    }
+
+    private SemaphoreSlim ThumbnailLoadGate =>
+        _thumbnailLoadGate ??= new SemaphoreSlim(Math.Clamp(AppSettings.Instance.UserOptions.ThumbnailLoadingParallelism, 1, 8));
+
+    /// <summary>
+    /// Loads a book cover in the background and assigns it to the item control once ready.
+    /// </summary>
+    private void StartThumbnailLoad(PdfMetaDataReadResult pdfMetaData, BookItemCache cacheItem, int index, string bookName)
+    {
+        _ = Task.Run(async () =>
+        {
+            await ThumbnailLoadGate.WaitAsync();
+            try
+            {
+                var bitmap = await pdfMetaData.GetOrCreateThumbnailAsync(async () =>
+                {
+                    try
+                    {
+                        return await GetPdfThumbnailAsync(pdfMetaData);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogWarning($"Failed to get PDF thumbnail for {bookName}: {ex.Message}");
+                        return GenerateBookCoverBitmap(ThumbnailWidth, ThumbnailHeight, new Random(42 + index), bookName, index);
+                    }
+                });
+
+                await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    if (cacheItem.ImageControl != null)
+                    {
+                        cacheItem.ImageControl.Source = bitmap;
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"Failed to get PDF thumbnail for {bookName}: {ex.Message}");
+            }
+            finally
+            {
+                ThumbnailLoadGate.Release();
+            }
+        });
     }
 
     private void UpdateBooksDisplayDuringLoad()
@@ -2831,6 +2860,7 @@ public class ChooseMusicWindow : Window
             Height = ThumbnailHeight,
             Stretch = Stretch.UniformToFill
         };
+        cacheItem.ImageControl = img;
         sp.Children.Add(img);
 
         sp.Children.Add(new TextBlock
@@ -2910,63 +2940,24 @@ public class ChooseMusicWindow : Window
     /// </summary>
     private async Task<Bitmap> GetPdfThumbnailAsync(PdfMetaDataReadResult pdfMetaData)
     {
-        return await Task.Run(() =>
+        if (pdfMetaData.VolumeInfoList.Count == 0)
         {
-            if (pdfMetaData.VolumeInfoList.Count == 0)
-            {
-                throw new InvalidOperationException($"No volumes in metadata");
-            }
+            throw new InvalidOperationException("No volumes in metadata");
+        }
 
-            // For singles folders, VolumeInfoList is sorted alphabetically by filename.
-            // The first volume (index 0) determines the thumbnail image.
-            // Users can control which PDF is used as the cover by renaming it to sort first.
-            var firstVolume = pdfMetaData.VolumeInfoList[0];
-            var pdfPath = pdfMetaData.GetFullPathFileFromVolno(0);
+        // For singles folders, VolumeInfoList is sorted alphabetically by filename.
+        // The first volume (index 0) determines the thumbnail image.
+        // Users can control which PDF is used as the cover by renaming it to sort first.
+        var firstVolume = pdfMetaData.VolumeInfoList[0];
+        var pdfPath = pdfMetaData.GetFullPathFileFromVolno(0);
 
-            if (string.IsNullOrEmpty(pdfPath) || !File.Exists(pdfPath))
-            {
-                throw new FileNotFoundException($"PDF file not found: {pdfPath}");
-            }
+        if (string.IsNullOrEmpty(pdfPath) || !File.Exists(pdfPath))
+        {
+            throw new FileNotFoundException($"PDF file not found: {pdfPath}");
+        }
 
-            if (SkipCloudOnlyFiles)
-            {
-                var fileInfo = new FileInfo(pdfPath);
-                const FileAttributes RecallOnDataAccess = (FileAttributes)0x00400000;
-                const FileAttributes RecallOnOpen = (FileAttributes)0x00040000;
-
-                var attrs = fileInfo.Attributes;
-                bool isCloudOnly = (attrs & RecallOnDataAccess) == RecallOnDataAccess ||
-                                   (attrs & RecallOnOpen) == RecallOnOpen ||
-                                   (attrs & FileAttributes.Offline) == FileAttributes.Offline;
-
-                if (isCloudOnly)
-                {
-                    throw new IOException($"Cloud-only file, skipping: {pdfPath}");
-                }
-            }
-
-            var rotation = firstVolume.Rotation;
-            var pdfRotation = rotation switch
-            {
-                1 => PdfRotation.Rotate90,
-                2 => PdfRotation.Rotate180,
-                3 => PdfRotation.Rotate270,
-                _ => PdfRotation.Rotate0
-            };
-
-            using var pdfStream = File.OpenRead(pdfPath);
-            using var skBitmap = Conversion.ToImage(pdfStream, page: (Index)0, options: new PDFtoImage.RenderOptions(
-                Width: ThumbnailWidth,
-                Height: ThumbnailHeight,
-                Rotation: pdfRotation));
-
-            using var data = skBitmap.Encode(SKEncodedImageFormat.Png, 100);
-            using var stream = new MemoryStream();
-            data.SaveTo(stream);
-            stream.Seek(0, SeekOrigin.Begin);
-
-            return new Bitmap(stream);
-        });
+        return await PdfThumbnailLoader.GetOrCreateAsync(
+            pdfPath, ThumbnailWidth, ThumbnailHeight, firstVolume.Rotation, SkipCloudOnlyFiles);
     }
 
     private async Task FillBooksTabAsync()

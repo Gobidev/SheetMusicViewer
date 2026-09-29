@@ -87,6 +87,8 @@ namespace SheetMusicLib
         /// </summary>
         public object ThumbnailCache { get; set; }
 
+        private Task? _pendingThumbnail;
+
         /// <summary>
         /// Gets the cached thumbnail or creates it using the provided factory function.
         /// Results produced before a <see cref="ClearThumbnailCache"/> call are discarded,
@@ -97,6 +99,7 @@ namespace SheetMusicLib
         /// <returns>The cached or newly created thumbnail</returns>
         public async Task<T> GetOrCreateThumbnailAsync<T>(Func<Task<T>> thumbnailFactory) where T : class
         {
+            Task<T> thumbnailTask;
             int generation;
             lock (_thumbnailLock)
             {
@@ -105,22 +108,50 @@ namespace SheetMusicLib
                 {
                     return cached;
                 }
+
                 generation = _thumbnailGeneration;
-            }
 
-            // Create the thumbnail outside the lock
-            var thumbnail = await thumbnailFactory();
-
-            lock (_thumbnailLock)
-            {
-                // Discard results started before the cache was invalidated
-                if (generation == _thumbnailGeneration)
+                // Reuse an in-flight render instead of starting a second one
+                if (_pendingThumbnail is Task<T> pending)
                 {
-                    ThumbnailCache = thumbnail;
+                    thumbnailTask = pending;
+                }
+                else
+                {
+                    thumbnailTask = thumbnailFactory();
+                    _pendingThumbnail = thumbnailTask;
                 }
             }
 
-            return thumbnail;
+            try
+            {
+                var thumbnail = await thumbnailTask;
+                lock (_thumbnailLock)
+                {
+                    if (ReferenceEquals(_pendingThumbnail, thumbnailTask))
+                    {
+                        _pendingThumbnail = null;
+                    }
+
+                    // Discard results started before the cache was invalidated
+                    if (generation == _thumbnailGeneration)
+                    {
+                        ThumbnailCache = thumbnail;
+                    }
+                }
+                return thumbnail;
+            }
+            catch
+            {
+                lock (_thumbnailLock)
+                {
+                    if (ReferenceEquals(_pendingThumbnail, thumbnailTask))
+                    {
+                        _pendingThumbnail = null;
+                    }
+                }
+                throw;
+            }
         }
 
         /// <summary>
@@ -260,6 +291,7 @@ namespace SheetMusicLib
             lock (_thumbnailLock)
             {
                 ThumbnailCache = null;
+                _pendingThumbnail = null;
                 _thumbnailGeneration++;
             }
         }
