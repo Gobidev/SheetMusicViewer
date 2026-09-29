@@ -1780,9 +1780,8 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             // Don't disable the gesture handler - let individual InkCanvasControl
             // handle inking events. This allows navigation on non-inking pages
             // while still being able to ink on the enabled page.
-            // The InkCanvasControl.OnPointerPressed only handles events when 
-            // IsInkingEnabled is true, so events from the non-inking page
-            // will bubble up to the gesture handler.
+            // The ink canvas only marks events handled when it actually draws, so everything
+            // else bubbles up to the gesture handler for page turns and zoom.
             _gestureHandler.IsDisabled = false;
         }
     }

@@ -39,11 +39,14 @@ public class InkCanvasControl : Panel
     private bool _isErasingStroke; // True while the active stroke is an erase gesture (toolbar eraser or pen eraser)
 
     // Stylus support: while a pen (or mouse) produced events recently, touch input is ignored so a
-    // hand resting on the screen doesn't leave stray strokes.
-    private static readonly TimeSpan NonTouchSuppressionWindow = TimeSpan.FromMilliseconds(600);
-    private static readonly TimeSpan PenDuplicateGuardWindow = TimeSpan.FromMilliseconds(400);
-    private DateTime _lastNonTouchPointerUtc = DateTime.MinValue;
-    private DateTime _lastPenPointerUtc = DateTime.MinValue;
+    // hand resting on the screen doesn't leave stray strokes. The timestamps are static so both
+    // pages of a two-page view share the pen activity, and they use monotonic ticks so system clock
+    // changes can't skew the windows.
+    private const long NonTouchSuppressionMs = 600;
+    private const long PenDuplicateGuardMs = 400;
+    private static long _lastNonTouchPointerTicks = long.MinValue;
+    private static long _lastPenPointerTicks = long.MinValue;
+    private static readonly Cursor HiddenCursor = new(StandardCursorType.None);
     private static bool _loggedPenDetection;
     private static bool _loggedEraserDetection;
     private static bool _loggedTouchSuppression;
@@ -164,9 +167,6 @@ public class InkCanvasControl : Panel
         _bgImage.PointerMoved += OnPointerMoved;
         _bgImage.PointerReleased += OnPointerReleased;
         _bgImage.PointerCaptureLost += OnPointerCaptureLost;
-
-        // No pointer cursor over the page while writing with a pen
-        Cursor = new Cursor(StandardCursorType.None);
 
         Trace.WriteLine($"[InkCanvas] Created for page {pageNo}, hasInkData={inkStrokeClass != null}");
     }
@@ -394,7 +394,33 @@ public class InkCanvasControl : Panel
         {
             return true;
         }
-        return DateTime.UtcNow - _lastNonTouchPointerUtc < NonTouchSuppressionWindow;
+        return WithinWindow(_lastNonTouchPointerTicks, NonTouchSuppressionMs);
+    }
+
+    /// <summary>
+    /// True when a monotonic timestamp is set and recent enough to be within the given window
+    /// </summary>
+    private static bool WithinWindow(long lastTicks, long windowMs)
+    {
+        return lastTicks != long.MinValue && Environment.TickCount64 - lastTicks < windowMs;
+    }
+
+    /// <summary>
+    /// Hides the pointer cursor while a pen is in use, and restores it when a mouse is used
+    /// </summary>
+    private void UpdateCursorForPointerType(PointerType pointerType)
+    {
+        if (pointerType == PointerType.Pen)
+        {
+            if (!ReferenceEquals(Cursor, HiddenCursor))
+            {
+                Cursor = HiddenCursor;
+            }
+        }
+        else if (pointerType == PointerType.Mouse && ReferenceEquals(Cursor, HiddenCursor))
+        {
+            Cursor = null;
+        }
     }
 
     /// <summary>
@@ -402,6 +428,14 @@ public class InkCanvasControl : Panel
     /// </summary>
     private void CancelCurrentStroke()
     {
+        // Clear the drawing state first: releasing capture raises PointerCaptureLost synchronously,
+        // and the handler must not finalize the stroke we are discarding.
+        _currentNormalizedStroke = null;
+        _currentStrokeMetadata = null;
+        _isDrawing = false;
+        _isErasingStroke = false;
+        _currentStrokeFromTouch = false;
+
         if (_currentPolyline != null)
         {
             Children.Remove(_currentPolyline);
@@ -417,17 +451,11 @@ public class InkCanvasControl : Panel
             Children.Remove(_currentEllipse);
             _currentEllipse = null;
         }
-        if (_drawingPointer != null)
-        {
-            _drawingPointer.Capture(null);
-            _drawingPointer = null;
-        }
 
-        _currentNormalizedStroke = null;
-        _currentStrokeMetadata = null;
-        _isDrawing = false;
-        _isErasingStroke = false;
-        _currentStrokeFromTouch = false;
+        var pointer = _drawingPointer;
+        _drawingPointer = null;
+        pointer?.Capture(null);
+
         Trace.WriteLine($"[InkCanvas] Page {_pageNo}: Cancelled in-progress stroke");
     }
 
@@ -438,12 +466,14 @@ public class InkCanvasControl : Panel
         var isTouch = pointerType == PointerType.Touch;
         var isPen = pointerType == PointerType.Pen;
 
+        UpdateCursorForPointerType(pointerType);
+
         if (!isTouch)
         {
-            _lastNonTouchPointerUtc = DateTime.UtcNow;
+            _lastNonTouchPointerTicks = Environment.TickCount64;
             if (isPen)
             {
-                _lastPenPointerUtc = DateTime.UtcNow;
+                _lastPenPointerTicks = Environment.TickCount64;
             }
             if (!_loggedPenDetection && isPen)
             {
@@ -453,7 +483,7 @@ public class InkCanvasControl : Panel
         }
 
         // Some XWayland setups also emit a mouse event for the pen; ignore those duplicates
-        if (pointerType == PointerType.Mouse && DateTime.UtcNow - _lastPenPointerUtc < PenDuplicateGuardWindow)
+        if (pointerType == PointerType.Mouse && WithinWindow(_lastPenPointerTicks, PenDuplicateGuardMs))
         {
             e.Handled = true;
             return;
@@ -618,14 +648,13 @@ public class InkCanvasControl : Panel
 
     private void OnPointerMoved(object? sender, PointerEventArgs e)
     {
-        // Pen hover counts as activity so a hand resting on the screen can't draw
+        UpdateCursorForPointerType(e.Pointer.Type);
+
+        // Pen hover counts as activity so a hand resting on the screen can't draw. The pen duplicate
+        // guard only tracks presses, so a hovering pen doesn't swallow mouse clicks.
         if (e.Pointer.Type != PointerType.Touch)
         {
-            _lastNonTouchPointerUtc = DateTime.UtcNow;
-            if (e.Pointer.Type == PointerType.Pen)
-            {
-                _lastPenPointerUtc = DateTime.UtcNow;
-            }
+            _lastNonTouchPointerTicks = Environment.TickCount64;
         }
 
         if (!_isDrawing) return;
@@ -687,10 +716,13 @@ public class InkCanvasControl : Panel
 
     private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        // Keep consuming a suppressed touch so it doesn't reach the page turn and zoom handlers
+        // Keep consuming suppressed touches and duplicated pen mouse events so they can't reach
+        // the page turn and zoom handlers
         if (!_isDrawing)
         {
-            if (e.Pointer.Type == PointerType.Touch && IsTouchSuppressedByPen())
+            var strayTouch = e.Pointer.Type == PointerType.Touch && IsTouchSuppressedByPen();
+            var strayMouse = e.Pointer.Type == PointerType.Mouse && WithinWindow(_lastPenPointerTicks, PenDuplicateGuardMs);
+            if (strayTouch || strayMouse)
             {
                 e.Handled = true;
             }
@@ -759,6 +791,8 @@ public class InkCanvasControl : Panel
             FinalizeCurrentEllipse(new Point(_ellipseStartPoint.X, _ellipseStartPoint.Y));
         }
         
+        _isDrawing = false;
+        _drawingPointer = null;
         _isErasingStroke = false;
         _currentStrokeFromTouch = false;
     }
