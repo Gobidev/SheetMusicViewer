@@ -16,6 +16,7 @@ using SheetMusicLib;
 using SkiaSharp;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -81,6 +82,9 @@ public class ChooseMusicWindow : Window
 
     // Cache for book items (bitmap + metadata)
     private List<BookItemCache> _bookItemCache = new();
+    // Realized item controls; the ListBox binds to this so items can be appended without a full rebuild
+    private readonly ObservableCollection<Control> _bookControls = new();
+    private Avalonia.Threading.DispatcherTimer? _filterDebounceTimer;
     private bool _isLoading = false;
 
     // Favorites data source
@@ -869,7 +873,7 @@ public class ChooseMusicWindow : Window
         _favoritesBrowseControl = null;
         _queryBrowseControl = null;
         _playlistSongsBrowseControl = null;
-        _lbBooks.ItemsSource = null;
+        _bookControls.Clear();
         _tbxTotals.Text = "Loading...";
 
         try
@@ -961,6 +965,7 @@ public class ChooseMusicWindow : Window
             Background = Brushes.Transparent // Let theme background show through
         });
         _lbBooks.ItemsPanel = wrapPanelFactory;
+        _lbBooks.ItemsSource = _bookControls;
         // Note: DoubleTapped is now handled on individual items in CreateBookItemControl
         // to ensure selection is set before processing
 
@@ -2704,10 +2709,25 @@ public class ChooseMusicWindow : Window
 
     private void OnFilterChanged(object? sender, TextChangedEventArgs e)
     {
-        if (!_isLoading && _bookItemCache.Count > 0)
+        if (_isLoading || _bookItemCache.Count == 0)
         {
-            RefreshBooksDisplay();
+            return;
         }
+
+        _filterDebounceTimer ??= new Avalonia.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(250)
+        };
+        _filterDebounceTimer.Stop();
+        _filterDebounceTimer.Tick -= FilterDebounceTimer_Tick;
+        _filterDebounceTimer.Tick += FilterDebounceTimer_Tick;
+        _filterDebounceTimer.Start();
+    }
+
+    private void FilterDebounceTimer_Tick(object? sender, EventArgs e)
+    {
+        _filterDebounceTimer?.Stop();
+        RefreshBooksDisplay();
     }
 
     private IEnumerable<PdfMetaDataReadResult> GetSortedMetadata()
@@ -2730,6 +2750,7 @@ public class ChooseMusicWindow : Window
     {
         _isLoading = true;
         _bookItemCache.Clear();
+        _bookControls.Clear();
 
         int index = 0;
 
@@ -2764,7 +2785,11 @@ public class ChooseMusicWindow : Window
         }
 
         _isLoading = false;
-        RefreshBooksDisplay();
+        // The incremental updates already rendered everything unless a filter was typed
+        if (!string.IsNullOrEmpty(_tbxFilter?.Text?.Trim()) || _bookControls.Count == 0)
+        {
+            RefreshBooksDisplay();
+        }
     }
 
     private SemaphoreSlim ThumbnailLoadGate =>
@@ -2821,15 +2846,23 @@ public class ChooseMusicWindow : Window
         {
             displayItems = displayItems.Where(item =>
                 item.BookName.Contains(filterText, StringComparison.OrdinalIgnoreCase));
-        }
 
-        var items = new List<Control>();
-        foreach (var cacheItem in displayItems)
+            // A filter is active: rebuild only the matching items
+            _bookControls.Clear();
+            foreach (var cacheItem in displayItems)
+            {
+                _bookControls.Add(CreateBookItemControl(cacheItem));
+            }
+        }
+        else
         {
-            items.Add(CreateBookItemControl(cacheItem));
+            // The sort order is fixed while loading, so append what is new instead of rebuilding
+            for (int i = _bookControls.Count; i < _bookItemCache.Count; i++)
+            {
+                _bookControls.Add(CreateBookItemControl(_bookItemCache[i]));
+            }
         }
 
-        _lbBooks.ItemsSource = items;
         UpdateTotalsText(displayItems);
     }
 
@@ -2922,14 +2955,13 @@ public class ChooseMusicWindow : Window
             sortedItems = filteredItems.OrderByDescending(item => item.Metadata.LastWriteTime);
         }
 
-        var items = new List<Control>();
+        _bookControls.Clear();
 
         foreach (var cacheItem in sortedItems)
         {
-            items.Add(CreateBookItemControl(cacheItem));
+            _bookControls.Add(CreateBookItemControl(cacheItem));
         }
 
-        _lbBooks.ItemsSource = items;
         UpdateTotalsText(sortedItems);
     }
 
@@ -2986,7 +3018,11 @@ public class ChooseMusicWindow : Window
             items.Add(sp);
         }
 
-        _lbBooks.ItemsSource = items;
+        _bookControls.Clear();
+        foreach (var item in items)
+        {
+            _bookControls.Add(item);
+        }
         _tbxTotals.Text = $"{items.Count} books (demo mode)";
     }
 
