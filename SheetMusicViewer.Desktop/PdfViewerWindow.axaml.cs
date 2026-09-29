@@ -88,6 +88,7 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     private readonly Dictionary<int, PageCacheEntry> _pageCache = new();
     private const int MaxCacheSize = 50;
     private int _currentCacheAge;
+    private int _showPageSequence;
     // Bitmaps attached to the visible page controls must not be disposed while shown
     private readonly HashSet<Bitmap> _inUseBitmaps = new();
     private readonly List<Bitmap> _deferredBitmapDisposals = new();
@@ -833,6 +834,8 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         
         _dpPage?.Children.Clear();
         _inUseBitmaps.Clear();
+        // Invalidate any render still running for the closing document
+        _showPageSequence++;
         ClearCache();
         FlushDeferredBitmapDisposals();
         
@@ -868,6 +871,8 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
                 FlushDeferredBitmapDisposals();
                 return;
             }
+            
+            var showSequence = ++_showPageSequence;
             
             // Save any unsaved ink strokes from the current page before navigating
             SaveInkFromCurrentCanvases();
@@ -986,6 +991,12 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
+                // A newer navigation replaced this one; its bitmaps may already be disposed
+                if (showSequence != _showPageSequence)
+                {
+                    return;
+                }
+
                 _dpPage?.Children.Clear();
                 // The old page controls are detached now, so bitmaps set aside while
                 // they were visible can be disposed
@@ -1182,14 +1193,17 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
     private void EvictCacheEntriesIfNeeded()
     {
         var options = AppSettings.Instance.UserOptions;
-        var entriesToRemove = Math.Max(0, _pageCache.Count - options.PageCacheMaxSize + 1);
-        var bytesToFree = GetPageCacheBytes() - options.PageCacheMaxBytes;
+        var maxCacheSize = Math.Max(1, options.PageCacheMaxSize);
+        var maxCacheBytes = Math.Max(0, options.PageCacheMaxBytes);
+        var entriesToRemove = Math.Max(0, _pageCache.Count - maxCacheSize + 1);
+        var bytesToFree = GetPageCacheBytes() - maxCacheBytes;
         if (entriesToRemove == 0 && bytesToFree <= 0)
         {
             return;
         }
         
-        foreach (var old in _pageCache.Values.OrderBy(e => e.Age).ToList())
+        // Only completed entries can free memory; never evict a render in flight
+        foreach (var old in _pageCache.Values.Where(e => e.Task.IsCompleted).OrderBy(e => e.Age).ToList())
         {
             if (entriesToRemove <= 0 && bytesToFree <= 0)
             {
@@ -1386,6 +1400,12 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             // Convert SKBitmap directly to Avalonia Bitmap without PNG encoding
             // This is significantly faster than encoding to PNG and decoding
             var result = ConvertSkBitmapToAvaloniaBitmap(skBitmap);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // The entry was evicted while rendering; do not hand out a bitmap
+                result.Dispose();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             var convertTime = sw.ElapsedMilliseconds;
             
             Trace.WriteLine($"  RenderPage {pageNo}: DPI={renderDpi}, GetBytes={getBytesTime}ms, Render={renderTime - getBytesTime}ms, Convert={convertTime - renderTime}ms");
@@ -1769,18 +1789,10 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
         
         if (newPage != CurrentPageNumber)
         {
-            NavigateToPage(newPage);
+            // ShowPageAsync updates CurrentPageNumber itself with the slider
+            // notification suppressed, so the page is not shown twice
+            _ = ShowPageAsync(newPage);
         }
-    }
-    
-    private void NavigateToPage(int pageNo)
-    {
-        // CurrentPageNumber is bound to the slider, so a plain assignment would
-        // raise Slider_ValueChanged and show the same page twice
-        _disableSliderValueChanged = true;
-        CurrentPageNumber = pageNo;
-        _disableSliderValueChanged = false;
-        _ = ShowPageAsync(pageNo);
     }
     
     private void BtnPrevNext_Click(bool isPrevious)
@@ -2436,14 +2448,14 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
                 case Key.Home:
                     if (_currentPdfMetaData != null)
                     {
-                        NavigateToPage(_currentPdfMetaData.PageNumberOffset);
+                        _ = ShowPageAsync(_currentPdfMetaData.PageNumberOffset);
                     }
                     e.Handled = true;
                     break;
                 case Key.End:
                     if (_currentPdfMetaData != null)
                     {
-                        NavigateToPage(_currentPdfMetaData.MaxPageNum - 1);
+                        _ = ShowPageAsync(_currentPdfMetaData.MaxPageNum - 1);
                     }
                     e.Handled = true;
                     break;
