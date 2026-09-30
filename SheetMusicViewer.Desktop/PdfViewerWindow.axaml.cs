@@ -180,6 +180,19 @@ public partial class PdfViewerWindow : Window, INotifyPropertyChanged
             // Validate the saved restore geometry even when starting maximized/full screen
             ClampWindowToVisibleScreen();
             UpdateResponsiveLayout(Bounds.Width);
+
+            // Some window managers drop the state request made during Opened
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (AppSettings.Instance.IsFullScreen)
+                {
+                    if (WindowState != WindowState.FullScreen) WindowState = WindowState.FullScreen;
+                }
+                else if (AppSettings.Instance.WindowMaximized && WindowState != WindowState.Maximized)
+                {
+                    WindowState = WindowState.Maximized;
+                }
+            }, DispatcherPriority.Background);
         };
         
         // Save settings and cleanup on close
