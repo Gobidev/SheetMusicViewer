@@ -61,4 +61,4 @@ jobs:
       - name: Upload the bundle to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload personal-flatpak-1.020 SheetMusicViewer.flatpak --clobber
+        run: gh release upload personal-flatpak-1.020 SheetMusicViewer.flatpak --clobber --repo "$GITHUB_REPOSITORY"
