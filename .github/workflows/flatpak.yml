@@ -2,7 +2,7 @@ name: Flatpak
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, personal-flatpak ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ master ]
@@ -44,3 +44,21 @@ jobs:
           bundle: SheetMusicViewer.flatpak
           manifest-path: flatpak/com.github.calvinhsia.SheetMusicViewer.yml
           artifact-name: SheetMusicViewer-flatpak
+
+  release:
+    name: Refresh the personal release
+    needs: flatpak
+    if: github.ref == 'refs/heads/personal-flatpak'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: SheetMusicViewer-flatpak
+
+      - name: Upload the bundle to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload personal-flatpak-1.020 SheetMusicViewer.flatpak --clobber
